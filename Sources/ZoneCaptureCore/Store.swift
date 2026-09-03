@@ -93,6 +93,32 @@ public final class Store {
         if sqlite3_exec(db, ddl, nil, nil, nil) != SQLITE_OK {
             report(.schemaFailed(String(cString: sqlite3_errmsg(db))))
         }
+        // Forward-compatible column for the inference stage (see VISION.md):
+        // the topic a capture belongs to. Discovered later, never lost.
+        // Migrated onto existing databases as well.
+        addColumnIfMissing("topic", type: "TEXT")
+    }
+
+    private func addColumnIfMissing(_ column: String, type: String) {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(links);", -1, &stmt, nil) == SQLITE_OK else {
+            return
+        }
+        defer { sqlite3_finalize(stmt) }
+        var exists = false
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let namePtr = sqlite3_column_text(stmt, 1),
+               String(cString: namePtr) == column {
+                exists = true
+                break
+            }
+        }
+        if !exists {
+            let sql = "ALTER TABLE links ADD COLUMN \(column) \(type);"
+            if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
+                report(.schemaFailed("add column \(column): \(String(cString: sqlite3_errmsg(db)))"))
+            }
+        }
     }
 
     @discardableResult
