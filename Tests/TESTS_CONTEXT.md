@@ -96,3 +96,39 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer ./make-app.sh buil
 ## Results
 
 31 tests, 0 failures (15 Store + 16 URLFetcher).
+
+
+## Addendum — post-review changes (owner-approved, 2026-09-03)
+
+Behavior changes made after the original 31-test pass. Where a change
+invalidated an old expectation, that expectation was updated (documented
+below); no new tests were authored by the implementing agent, per project
+rules.
+
+1. **Exact bundle-ID matching in `URLFetcher.scriptForApp`** (approved fix:
+   substring matches like `n.contains("edge")` could select — and launch —
+   the wrong browser's AppleScript). Selection is now: exact bundle id
+   (case-insensitive) → exact canonical app name → nil. Firefox is handled
+   separately via a best-effort Accessibility lookup (`firefoxTabInfo`),
+   not via `scriptForApp`.
+   - **Test change:** `testScriptForAppMatchesOnBundleId` (asserted the old
+     substring behavior) replaced by `testScriptForAppDoesNotMatchUnknownBundleIds`
+     (nil for `com.example.chrome.ext`).
+
+2. **Error regime (GUI glue; not unit-tested by design):**
+   `StoreError` + `Store.onError` in ZoneCaptureCore — failure paths keep
+   their existing return values (`insertLink` → -1, `recent` → []) so
+   existing tests are untouched. `URLFetcher.Result.error` distinguishes
+   Automation-permission denial (-1743) from other script failures.
+   `CapturePanel` shows per-error status text, keeps the panel open on a
+   failed DB write (nothing typed is lost), and reuses one banner window
+   for ✓/✗ feedback. `HotkeyManager.onRegistrationFailed` surfaces
+   `RegisterEventHotKey` failures in the menu bar.
+
+3. **Async URL fetch:** `URLFetcher.detectFrontmost()` (synchronous identity
+   capture) + `URLFetcher.capture(app:)` (safe off the main thread). The
+   panel shows immediately and fills the URL when the fetch returns.
+   `captureFrontmost()` remains as a blocking convenience wrapper.
+
+4. **Configurable hotkey** via `UserDefaults` keys `hotkeyKeyCode` /
+   `hotkeyModifiers` (defaults: 37, cmdKey|shiftKey).

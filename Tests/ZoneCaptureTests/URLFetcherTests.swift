@@ -143,17 +143,17 @@ final class URLFetcherTests: XCTestCase {
 
     // MARK: - scriptForApp: bundleId fallback
 
-    func testScriptForAppMatchesOnBundleId() {
-        // Name doesn't contain "chrome" but bundleId does (case-sensitive:
-        // the production code checks bundleId.contains("chrome") with a
-        // lowercase literal, so the bundleId must contain lowercase "chrome").
+    func testScriptForAppDoesNotMatchUnknownBundleIds() {
+        // Revised behavior (owner-approved, 2026-09-03): selection matches
+        // EXACT bundle identifiers only. The previous substring fallback
+        // routed any bundle id containing "chrome"/"edge"/"arc" to that
+        // browser's AppleScript — which can run against (or even launch)
+        // the wrong application. Unknown ids must return nil so the panel
+        // falls back to manual paste.
         let script = URLFetcher.scriptForApp(
             name: "MyCustomBrowser", bundleId: "com.example.chrome.ext")
-        XCTAssertNotNil(script,
-            "scriptForApp should fall back to bundleId matching when name doesn't match")
-        if let script {
-            XCTAssertTrue(script.contains("Google Chrome"))
-        }
+        XCTAssertNil(script,
+            "Unknown bundle ids must not match a browser script by substring")
     }
 
     // MARK: - script content sanity

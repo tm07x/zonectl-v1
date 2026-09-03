@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyManager()
     private let panel = CapturePanel()
+    private var lastReadError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar item — a small bookmark glyph.
@@ -40,9 +41,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Global hotkey (works even when another app is frontmost).
         hotkey.onTrigger = { [weak self] in self?.showPanel() }
+        hotkey.onRegistrationFailed = { [weak self] status in
+            // Never let the hotkey die silently: rename the first menu entry
+            // so the missing shortcut is visible where the app lives.
+            NSLog("[ZoneCapture] hotkey registration failed (status \(status))")
+            self?.statusItem.menu?.item(at: 0)?.title =
+                "⚠︎ Hotkey not registered (⌘⇧L in use?)"
+        }
         hotkey.registerDefault()
 
         NSLog("[ZoneCapture] running. DB: \(Store.shared.databasePath)")
+
+        // Surface database errors instead of failing silently. Write failures
+        // are also caught at the call site (the panel shows a retryable
+        // error); this hook logs everything and remembers read errors so
+        // "Recent captures…" can report them.
+        Store.shared.onError = { [weak self] error in
+            NSLog("[ZoneCapture] database error: \(error)")
+            if case .queryFailed = error {
+                self?.lastReadError = String(describing: error)
+            }
+        }
 
         registerLoginItem()
     }
@@ -89,7 +108,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Recent captures"
         alert.informativeText = rows.isEmpty
-            ? "Nothing captured yet. Press ⌘⇧L in a browser."
+            ? (lastReadError.map { "Database read failed: \($0)" }
+                ?? "Nothing captured yet. Press ⌘⇧L in a browser.")
             : rows.enumerated().map { i, row in
                 let t = ISO8601DateFormatter().string(from: row.created)
                 let title = row.title.map { " (\($0))" } ?? ""

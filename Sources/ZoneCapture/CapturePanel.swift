@@ -10,9 +10,13 @@ import ZoneCaptureCore
 ///   │            [ Cancel ]      [ Save (↵) ]      │
 ///   └───────────────────────────────────────────┘
 ///
-/// The URL field is pre-filled from the frontmost browser and left editable so
-/// you can fix it if the AppleScript grab missed. Pressing Enter saves and
-/// dismisses; Escape cancels.
+/// The panel appears IMMEDIATELY; the browser URL is fetched in the
+/// background (AppleScript can take 100–300 ms) and filled in when it
+/// arrives. Pressing Enter saves and dismisses; Escape cancels.
+///
+/// Error feedback: fetch problems (Automation permission denied, browser
+/// unreadable) show an actionable status line. A failed database write
+/// shows an error banner and KEEPS THE PANEL OPEN so nothing typed is lost.
 final class CapturePanel {
 
     private var panel: NSPanel!
@@ -22,6 +26,11 @@ final class CapturePanel {
     private var sourceApp: String = ""
     private var sourceTitle: String?
 
+    // One reusable confirmation/error banner (previously a new NSWindow was
+    // allocated on every save).
+    private var bannerWindow: NSWindow?
+    private var bannerLabel: NSTextField?
+
     init() {
         buildUI()
     }
@@ -29,30 +38,52 @@ final class CapturePanel {
     // MARK: - Public
 
     func show() {
-        // Grab the URL *before* our panel steals focus, while the browser is
-        // still the frontmost app.
-        let captured = URLFetcher.captureFrontmost()
-        sourceApp = captured?.appName ?? ""
-        // Remember the tab title so Save can persist it alongside the URL.
-        sourceTitle = (captured?.title?.isEmpty == false) ? captured?.title : nil
+        // Identify the frontmost app synchronously, *before* this panel
+        // steals focus. The URL fetch itself runs in the background.
+        let front = URLFetcher.detectFrontmost()
+        sourceApp = front?.name ?? ""
+        sourceTitle = nil
 
-        urlField.stringValue = captured?.url ?? ""
+        urlField.stringValue = ""
         commentField.stringValue = ""
-
-        if let captured, captured.url.isEmpty {
-            statusLabel.stringValue = "No URL from \(sourceApp) — paste one or type a note."
-        } else {
-            statusLabel.stringValue = "From \(sourceApp) · press ↵ to save"
-        }
+        statusLabel.stringValue = front.map { "From \($0.name) — fetching URL…" }
+            ?? "Type a URL or note…"
 
         positionNearMouseOrCenter()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        panel.makeFirstResponder(urlField)
 
-        // Focus the comment field if we already have a URL, else the URL field.
-        if (captured?.url.isEmpty ?? true) {
+        guard let front else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let captured = URLFetcher.capture(app: front)
+            DispatchQueue.main.async { self.apply(captured) }
+        }
+    }
+
+    private func apply(_ captured: URLFetcher.Result) {
+        urlField.stringValue = captured.url
+        sourceTitle = (captured.title?.isEmpty == false) ? captured.title : nil
+
+        switch captured.error {
+        case .automationDenied:
+            statusLabel.stringValue =
+                "Permission needed: allow ZoneCapture to control \(captured.appName) " +
+                "under System Settings → Privacy & Security → Automation."
+        case .browserNotRunningOrNoTabs:
+            statusLabel.stringValue =
+                "Couldn't read a tab from \(captured.appName) — paste the URL."
+        case nil:
+            if captured.url.isEmpty {
+                statusLabel.stringValue = "No URL from \(captured.appName) — paste one or type a note."
+            } else {
+                statusLabel.stringValue = "From \(captured.appName) · press ↵ to save"
+            }
+        }
+
+        if captured.url.isEmpty {
             panel.makeFirstResponder(urlField)
-        } else {
+        } else if commentField.stringValue.isEmpty {
             panel.makeFirstResponder(commentField)
         }
     }
@@ -62,7 +93,7 @@ final class CapturePanel {
     private func buildUI() {
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 168),
-            styleMask: [.titled, .titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false)
         panel.title = "ZoneCapture"
@@ -169,19 +200,16 @@ final class CapturePanel {
     // MARK: - Positioning
 
     private func positionNearMouseOrCenter() {
-        if let screen = NSScreen.main {
-            let mouse = NSEvent.mouseLocation
-            let screenFrame = screen.visibleFrame
-            var frame = panel.frame
-            // Center horizontally on the screen that has the mouse, just below
-            // the top so it appears where the eye already is.
-            let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) }) ?? screen
-            let visible = targetScreen.visibleFrame
-            frame.origin.x = visible.midX - frame.width / 2
-            frame.origin.y = visible.maxY - frame.height - 80
-            panel.setFrame(frame, display: true)
-            _ = screenFrame
-        }
+        let mouse = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+        guard let visible = targetScreen?.visibleFrame else { return }
+        // Center horizontally on the screen with the mouse, near the top so
+        // it appears where the eye already is.
+        var frame = panel.frame
+        frame.origin.x = visible.midX - frame.width / 2
+        frame.origin.y = visible.maxY - frame.height - 80
+        panel.setFrame(frame, display: true)
     }
 
     // MARK: - Actions
@@ -206,45 +234,60 @@ final class CapturePanel {
         let kind = url.isEmpty ? "note" : "url"
         let recordedURL = url.isEmpty ? "(no url — note from \(sourceApp))" : url
 
-        Store.shared.insertLink(
+        let id = Store.shared.insertLink(
             url: recordedURL,
             title: url.isEmpty ? nil : sourceTitle,
             comment: comment.isEmpty ? nil : comment,
             sourceApp: sourceApp,
             kind: kind)
 
-        flashSuccess()
+        if id < 0 {
+            // Database write failed. Keep the panel open so nothing typed is
+            // lost, and tell the user clearly how to retry.
+            statusLabel.stringValue =
+                "✗ Save failed (database error) — press ↵ to retry. Details in Console."
+            flashBanner("✗ Save failed")
+            return
+        }
+
+        flashBanner("✓ Captured")
         panel.orderOut(nil)
     }
 
-    private func flashSuccess() {
-        // Brief visual confirmation that the capture landed.
-        let banner = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 220, height: 44),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false)
-        banner.isOpaque = false
-        banner.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95)
-        banner.level = .floating
-        banner.isReleasedWhenClosed = false
-        let label = NSTextField(labelWithString: "✓ Captured")
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        banner.contentView?.addSubview(label)
-        if let cv = banner.contentView {
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: cv.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: cv.centerYAnchor),
-            ])
+    private func flashBanner(_ text: String) {
+        // Brief visual confirmation (or error notice). Reuses one window.
+        if bannerWindow == nil {
+            let banner = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 260, height: 44),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false)
+            banner.isOpaque = false
+            banner.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95)
+            banner.level = .floating
+            banner.isReleasedWhenClosed = false
+            let label = NSTextField(labelWithString: text)
+            label.alignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false
+            banner.contentView?.addSubview(label)
+            if let cv = banner.contentView {
+                NSLayoutConstraint.activate([
+                    label.centerXAnchor.constraint(equalTo: cv.centerXAnchor),
+                    label.centerYAnchor.constraint(equalTo: cv.centerYAnchor),
+                ])
+            }
+            bannerWindow = banner
+            bannerLabel = label
         }
+        guard let banner = bannerWindow, let label = bannerLabel else { return }
+        label.stringValue = text
         if let screen = NSScreen.main {
             var f = banner.frame
             f.origin.x = screen.visibleFrame.midX - f.width / 2
             f.origin.y = screen.visibleFrame.maxY - 120
             banner.setFrame(f, display: true)
         }
-        banner.makeKeyAndOrderFront(nil)
+        banner.orderFront(nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
             banner.orderOut(nil)
         }

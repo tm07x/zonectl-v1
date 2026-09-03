@@ -9,10 +9,27 @@ final class HotkeyManager {
     private var hotKeyRef: EventHotKeyRef?
     var onTrigger: (() -> Void)?
 
-    /// Default binding: Cmd + Shift + L  (L for "link").
-    /// KeyCode 37 == 'L'. Override freely later.
+    /// Called when the OS refuses the registration (typically because another
+    /// app already owns the combo). The UI must surface this — a silently dead
+    /// hotkey is the worst failure mode of this app.
+    var onRegistrationFailed: ((OSStatus) -> Void)?
+
+    /// Default binding: Cmd + Shift + L  (L for "link"). KeyCode 37 == 'L'.
+    ///
+    /// Configurable without code, e.g. to switch to ⌥⇧L (keyCode 37,
+    /// modifiers cmdKey|optionKey… see Carbon masks below):
+    ///
+    ///     defaults write com.grokink.zonecapture hotkeyKeyCode -int 37
+    ///     defaults write com.grokink.zonecapture hotkeyModifiers -int 2816
+    ///
+    /// Carbon modifier masks: cmdKey 256 · shiftKey 512 · optionKey 2048 ·
+    /// controlKey 4096 (combine by adding). Restart the app to apply.
     func registerDefault() {
-        register(keyCode: 37, modifiers: UInt32(cmdKey) | UInt32(shiftKey))
+        let defaults = UserDefaults.standard
+        let keyCode = UInt32(defaults.object(forKey: "hotkeyKeyCode") as? Int ?? 37)
+        let modifiers = UInt32(
+            defaults.object(forKey: "hotkeyModifiers") as? Int ?? (cmdKey | shiftKey))
+        register(keyCode: keyCode, modifiers: modifiers)
     }
 
     func register(keyCode: UInt32, modifiers: UInt32) {
@@ -24,7 +41,7 @@ final class HotkeyManager {
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
-        InstallEventHandler(
+        let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { (_, eventRef, userData) -> OSStatus in
                 guard let userData else { return noErr }
@@ -37,15 +54,23 @@ final class HotkeyManager {
             &spec,
             selfPtr,
             &eventHandler)
+        if handlerStatus != noErr {
+            NSLog("[ZoneCapture] InstallEventHandler failed: \(handlerStatus)")
+        }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x5A4F4E45), id: 1)  // 'ZONE'
-        RegisterEventHotKey(
+        let status = RegisterEventHotKey(
             keyCode,
             modifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
             &hotKeyRef)
+        if status != noErr {
+            NSLog("[ZoneCapture] RegisterEventHotKey failed (\(status)) — combo likely owned by another app")
+            hotKeyRef = nil
+            onRegistrationFailed?(status)
+        }
     }
 
     func unregister() {

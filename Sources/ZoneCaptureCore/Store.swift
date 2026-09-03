@@ -7,8 +7,38 @@ import SQLite3
 /// rebuilds/reinstalls: `~/Library/Application Support/ZoneCapture/zonecapture.db`.
 /// Parsed-page markdown (feature 2) lands in a sibling `captures/` directory and
 /// the DB row points to the file path.
+/// Errors surfaced via `Store.onError` so the app layer can show user-facing
+/// feedback instead of failing silently. Every error is also NSLog'd.
+public enum StoreError: Error, CustomStringConvertible {
+    case openFailed(String)
+    case schemaFailed(String)
+    case insertFailed(String)
+    case queryFailed(String)
+
+    public var description: String {
+        switch self {
+        case .openFailed(let msg): return "database open failed: \(msg)"
+        case .schemaFailed(let msg): return "schema creation failed: \(msg)"
+        case .insertFailed(let msg): return "write failed: \(msg)"
+        case .queryFailed(let msg): return "read failed: \(msg)"
+        }
+    }
+}
+
 public final class Store {
     public static let shared = Store()
+
+    /// App-layer hook for surfacing database errors in the UI. Insert
+    /// failures are additionally visible via `insertLink`'s -1 return.
+    public var onError: ((StoreError) -> Void)?
+
+    private func report(_ error: StoreError) {
+        NSLog("[ZoneCapture] store error: \(error)")
+        onError?(error)
+    }
+
+    /// SQLite destructor flag: copy bound strings immediately.
+    private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     private let dbPath: String
     private let capturesDir: String
@@ -40,7 +70,7 @@ public final class Store {
     private func open() {
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
             let msg = String(cString: sqlite3_errmsg(db))
-            NSLog("[ZoneCapture] failed to open db at \(dbPath): \(msg)")
+            report(.openFailed("\(dbPath): \(msg)"))
         }
         // WAL for durability + concurrent reads.
         sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil)
@@ -60,7 +90,9 @@ public final class Store {
         );
         CREATE INDEX IF NOT EXISTS idx_links_created ON links(created_at DESC);
         """
-        sqlite3_exec(db, ddl, nil, nil, nil)
+        if sqlite3_exec(db, ddl, nil, nil, nil) != SQLITE_OK {
+            report(.schemaFailed(String(cString: sqlite3_errmsg(db))))
+        }
     }
 
     @discardableResult
@@ -78,25 +110,25 @@ public final class Store {
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            NSLog("[ZoneCapture] insert prepare failed: \(String(cString: sqlite3_errmsg(db)))")
+            report(.insertFailed("prepare: \(String(cString: sqlite3_errmsg(db)))"))
             return -1
         }
         defer { sqlite3_finalize(stmt) }
 
-        sqlite3_bind_text(stmt, 1, url, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        sqlite3_bind_text(stmt, 2, title, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        sqlite3_bind_text(stmt, 3, comment, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        sqlite3_bind_text(stmt, 4, sourceApp, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
-        sqlite3_bind_text(stmt, 5, kind, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_text(stmt, 1, url, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, comment, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, sourceApp, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 5, kind, -1, SQLITE_TRANSIENT)
         if let cp = capturePath {
-            sqlite3_bind_text(stmt, 6, cp, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(stmt, 6, cp, -1, SQLITE_TRANSIENT)
         } else {
             sqlite3_bind_null(stmt, 6)
         }
         sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
-            NSLog("[ZoneCapture] insert step failed: \(String(cString: sqlite3_errmsg(db)))")
+            report(.insertFailed("step: \(String(cString: sqlite3_errmsg(db)))"))
             return -1
         }
         return sqlite3_last_insert_rowid(db)
@@ -107,7 +139,10 @@ public final class Store {
         let sql = "SELECT id, url, title, comment, created_at FROM links ORDER BY created_at DESC LIMIT ?;"
         var stmt: OpaquePointer?
         var rows: [(Int64, String, String?, String?, Date)] = []
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            report(.queryFailed(String(cString: sqlite3_errmsg(db))))
+            return []
+        }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int64(stmt, 1, Int64(limit))
         while sqlite3_step(stmt) == SQLITE_ROW {

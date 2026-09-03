@@ -7,7 +7,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ACTION="${1:-install}"
-BUILD_DIR="$(mktemp -d -t zonecapture-build)"
 APP_ROOT="$PWD/build"
 APP_BUNDLE="$APP_ROOT/ZoneCapture.app"
 

@@ -68,9 +68,37 @@ CREATE TABLE links (
 
 ## Supported browsers (URL grab via AppleScript)
 
-Safari, Google Chrome, Microsoft Edge, Brave, Arc. Firefox has no tab-URL
-AppleScript dictionary by default — for Firefox the panel opens with an empty
-URL field so you can paste it (or use the browser's copy-URL shortcut first).
+Safari, Google Chrome, Microsoft Edge, Brave, Arc — matched by **exact bundle
+ID** (no fuzzy name matching, so the wrong browser can never be scripted or
+launched). Firefox has no tab-URL AppleScript dictionary; ZoneCapture tries
+the Accessibility API (address bar of the focused window) and otherwise opens
+the panel with an empty URL field so you can paste.
+
+## Hotkey configuration
+
+Default is ⌘⇧L. Change it without code (restart the app to apply):
+
+```bash
+defaults write com.grokink.zonecapture hotkeyKeyCode -int 37
+defaults write com.grokink.zonecapture hotkeyModifiers -int 2816   # ⌘⌥L
+```
+
+Carbon modifier masks: cmdKey 256 · shiftKey 512 · optionKey 2048 ·
+controlKey 4096 (add to combine).
+
+## Error feedback
+
+Nothing fails silently:
+
+- **Automation permission denied** → status line points to
+  System Settings → Privacy & Security → Automation.
+- **Browser unreadable** (not running, no tab, script error) → status line
+  suggests pasting the URL.
+- **Database write failure** → ✗ banner; the panel stays open with your text
+  intact — press ↵ to retry.
+- **Database read failure** → "Recent captures…" reports the error.
+- **Hotkey not registered** (combo owned by another app) → the menu-bar entry
+  is renamed with a ⚠︎ warning.
 
 ## Architecture
 
