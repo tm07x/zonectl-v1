@@ -1,4 +1,14 @@
+# SwiftPM
 .build/
 build/
-.swiftpm/
+*.xcodeproj
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# macOS
 .DS_Store
