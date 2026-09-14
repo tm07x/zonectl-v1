@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ZoneCapture architecture",
+    "output": "zonecapture-architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "capture-path",
+        "label": "Core capture path",
+        "focus": ["user", "hotkey", "app", "panel", "urlfetcher", "browser", "store", "dbfile"],
+        "note": "Hotkey to floating panel, browser URL/title, SQLite row."
+      },
+      {
+        "id": "read-and-secrets",
+        "label": "Read side & secrets",
+        "focus": ["store", "dbfile", "keychain", "zonectl"],
+        "note": "Keychain-backed secrets and the zonectl CLI over the same SQLite DB."
+      }
+    ]
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "macOS desktop", "pos": [40, 300], "size": [120, 60] },
+    { "id": "hotkey", "type": "frontend", "label": "Global hotkey", "sublabel": "Carbon ⌘⇧L", "pos": [260, 300], "size": [130, 60] },
+    { "id": "app", "type": "backend", "label": "ZoneCapture", "sublabel": "menu-bar LSUIElement", "pos": [460, 300], "size": [140, 60] },
+    { "id": "panel", "type": "frontend", "label": "CapturePanel", "sublabel": "floating NSPanel", "pos": [660, 300], "size": [140, 60] },
+    { "id": "urlfetcher", "type": "backend", "label": "URLFetcher", "sublabel": "AppleScript / AX", "pos": [660, 160], "size": [140, 60] },
+    { "id": "browser", "type": "external", "label": "Browser", "sublabel": "Safari / Chrome / Arc", "pos": [260, 160], "size": [130, 60] },
+    { "id": "store", "type": "database", "label": "Store", "sublabel": "SQLite wrapper", "pos": [860, 300], "size": [130, 60] },
+    { "id": "dbfile", "type": "database", "label": "zonecapture.db", "sublabel": "~/Library/Application Support", "pos": [1040, 300], "size": [150, 60] },
+    { "id": "keychain", "type": "security", "label": "Keychain", "sublabel": "SecretStore", "pos": [460, 460], "size": [120, 60] },
+    { "id": "zonectl", "type": "external", "label": "zonectl", "sublabel": "Python CLI", "pos": [40, 460], "size": [130, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "macOS app", "wraps": ["hotkey", "app", "panel", "urlfetcher", "store", "keychain"] }
+  ],
+  "connections": [
+    { "id": "user-hotkey", "from": "user", "to": "hotkey", "label": "⌘⇧L", "variant": "emphasis", "labelDy": 54 },
+    { "id": "hotkey-app", "from": "hotkey", "to": "app", "label": "trigger", "labelDy": 54 },
+    { "id": "app-panel", "from": "app", "to": "panel", "label": "show", "labelDy": 54 },
+    { "id": "panel-fetch", "from": "panel", "to": "urlfetcher", "label": "fetch URL + return title", "fromSide": "top", "toSide": "bottom", "labelAt": [700, 230] },
+    { "id": "urlfetcher-browser", "from": "urlfetcher", "to": "browser", "label": "AppleScript / AX", "labelDy": -24 },
+    { "id": "panel-store", "from": "panel", "to": "store", "label": "save link", "labelDy": 54 },
+    { "id": "app-keychain", "from": "app", "to": "keychain", "label": "secrets", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelAt": [520, 380] },
+    { "id": "store-db", "from": "store", "to": "dbfile", "label": "SQLite", "labelDy": 54 },
+    { "id": "user-zonectl", "from": "user", "to": "zonectl", "label": "list / search / export", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [100, 380] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Core capture", "items": ["Global ⌘⇧L opens a floating panel", "URLFetcher reads the frontmost browser tab", "Store persists URL, title, note, source app to SQLite"] },
+    { "dot": "emerald", "title": "Read side & secrets", "items": ["zonectl queries the same SQLite DB", "KeychainSecretStore replaces the op CLI for AI keys"] },
+    { "dot": "violet", "title": "In progress: Feature 2", "items": ["⌘⇧⌥L triggers zone_extract.py", "Python downloads the page and writes Markdown + frontmatter + JSON", "Store keeps a file link so captures stay local and searchable"] }
+  ]
+}
