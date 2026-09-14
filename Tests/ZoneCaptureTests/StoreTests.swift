@@ -302,4 +302,34 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(oldRows[0].url, newRows[0].url)
         XCTAssertEqual(oldRows[0].id, newRows[0].id)
     }
+
+    // MARK: - Concurrency
+
+    /// Regression: page capture inserts on a background queue while the panel
+    /// can save on the main thread. `sqlite3_last_insert_rowid` is
+    /// connection-global, so without serialization two interleaved inserts
+    /// can hand a caller the other caller's row id.
+    func testConcurrentInsertsAllLandWithUniqueIds() {
+        let (store, _) = makeTempStore()
+        let group = DispatchGroup()
+        let idsLock = NSLock()
+        var ids: [Int64] = []
+
+        for i in 0..<40 {
+            DispatchQueue.global().async(group: group) {
+                let id = store.insertLink(
+                    url: "https://example.com/\(i)", title: nil,
+                    comment: nil, sourceApp: "test")
+                idsLock.lock()
+                ids.append(id)
+                idsLock.unlock()
+            }
+        }
+        group.wait()
+
+        XCTAssertEqual(ids.count, 40)
+        XCTAssertFalse(ids.contains(-1), "no insert should fail")
+        XCTAssertEqual(Set(ids).count, 40, "every insert must return its own row id")
+        XCTAssertEqual(store.recentAll(limit: 100).count, 40)
+    }
 }

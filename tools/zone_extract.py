@@ -14,12 +14,17 @@ import urllib.request
 from readability import Document
 from markdownify import markdownify as md_to_markdown
 
+# Responses larger than this are truncated rather than buffered whole: an
+# unbounded read() lets one huge page balloon memory and produce a giant
+# capture file.
+MAX_BYTES = 10 * 1024 * 1024
+
 
 def fetch(url: str, timeout: int = 20) -> str:
     req = urllib.request.Request(
         url, headers={"User-Agent": "ZoneCapture/0.1 (+macOS)"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", errors="replace")
+        return r.read(MAX_BYTES + 1)[:MAX_BYTES].decode("utf-8", errors="replace")
 
 
 def slugify(s: str) -> str:

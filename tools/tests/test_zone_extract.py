@@ -29,3 +29,23 @@ def test_extract_error_is_raised(tmp_path, monkeypatch):
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         assert "network down" in str(e)
+
+
+class _FakeResponse:
+    def __init__(self, body): self._body = body
+    def read(self, n=-1):
+        return self._body if n is None or n < 0 else self._body[:n]
+    def __enter__(self): return self
+    def __exit__(self, *args): return False
+
+
+def test_fetch_truncates_oversized_responses(monkeypatch):
+    # An unbounded read() lets a multi-hundred-MB page balloon memory and
+    # produce a giant capture. The cap keeps the capture usable (truncated)
+    # instead of failing it outright.
+    monkeypatch.setattr(ze, "MAX_BYTES", 1024)
+    monkeypatch.setattr(
+        ze.urllib.request, "urlopen",
+        lambda req, timeout=20: _FakeResponse(b"x" * 5000))
+    result = ze.fetch("https://example.com/big")
+    assert len(result) == 1024

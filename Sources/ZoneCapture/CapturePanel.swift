@@ -30,6 +30,9 @@ final class CapturePanel {
     // allocated on every save).
     private var bannerWindow: NSWindow?
     private var bannerLabel: NSTextField?
+    /// Pending auto-hide for the banner; cancelled when a newer banner
+    /// arrives so an old timer can't dismiss the new message early.
+    private var bannerHideWork: DispatchWorkItem?
 
     init() {
         buildUI()
@@ -296,8 +299,11 @@ final class CapturePanel {
             banner.setFrame(f, display: true)
         }
         banner.orderFront(nil)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
-            banner.orderOut(nil)
+        bannerHideWork?.cancel()
+        let work = DispatchWorkItem { [weak banner] in
+            banner?.orderOut(nil)
         }
+        bannerHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1, execute: work)
     }
 }

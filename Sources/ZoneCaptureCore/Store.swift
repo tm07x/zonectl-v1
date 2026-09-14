@@ -32,9 +32,20 @@ public final class Store {
     /// failures are additionally visible via `insertLink`'s -1 return.
     public var onError: ((StoreError) -> Void)?
 
+    /// Serializes all database access. The panel saves on the main thread
+    /// while page capture inserts on a background queue, and SQLite's C API
+    /// is not safe to drive concurrently on one connection even in
+    /// serialized mode (the step → last_insert_rowid sequence is not atomic).
+    private let lock = NSLock()
+
     private func report(_ error: StoreError) {
         NSLog("[ZoneCapture] store error: \(error)")
-        onError?(error)
+        // Never invoke app code on the caller's thread — it may hold the
+        // lock and may be a background queue. Hop to main so UI state stays
+        // main-confined and a callback can't deadlock by re-entering Store.
+        DispatchQueue.main.async { [weak self] in
+            self?.onError?(error)
+        }
     }
 
     /// SQLite destructor flag: copy bound strings immediately.
@@ -135,6 +146,8 @@ public final class Store {
         VALUES (?,?,?,?,?,?,?);
         """
         var stmt: OpaquePointer?
+        lock.lock()
+        defer { lock.unlock() }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             report(.insertFailed("prepare: \(String(cString: sqlite3_errmsg(db)))"))
             return -1
@@ -175,9 +188,11 @@ public final class Store {
 
     /// Returns the most recent N captures, newest first.
     public func recent(limit: Int = 25) -> [(id: Int64, url: String, title: String?, comment: String?, created: Date)] {
-        let sql = "SELECT id, url, title, comment, created_at FROM links ORDER BY created_at DESC LIMIT ?;"
+        let sql = "SELECT id, url, title, comment, created_at FROM links ORDER BY created_at DESC, id DESC LIMIT ?;"
         var stmt: OpaquePointer?
         var rows: [(Int64, String, String?, String?, Date)] = []
+        lock.lock()
+        defer { lock.unlock() }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             report(.queryFailed(String(cString: sqlite3_errmsg(db))))
             return []
@@ -199,10 +214,12 @@ public final class Store {
     public func recentAll(limit: Int = 25) -> [CaptureRow] {
         let sql = """
         SELECT id, url, title, comment, source_app, kind, capture_path, topic, created_at
-        FROM links ORDER BY created_at DESC LIMIT ?;
+        FROM links ORDER BY created_at DESC, id DESC LIMIT ?;
         """
         var stmt: OpaquePointer?
         var rows: [CaptureRow] = []
+        lock.lock()
+        defer { lock.unlock() }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             report(.queryFailed(String(cString: sqlite3_errmsg(db))))
             return []

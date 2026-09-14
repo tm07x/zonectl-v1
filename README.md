@@ -161,11 +161,28 @@ See `docs/zonecapture-architecture.html` for an interactive diagram.
 
 ## Tests
 
-Swift: 47 XCTest tests covering Store, URLFetcher, Secrets, PageExtractor,
-and CaptureCoordinator. Python: 7 pytest tests covering `zone_extract.py` and
-`zonectl`. Authored via the project's subagent-driven TDD rules.
+Swift: 59 XCTest tests covering Store, URLFetcher, Secrets, PageExtractor
+(including real-subprocess runs against stub scripts: success, error payload,
+stderr fallback, pipe-flood deadlock regression, runaway-process watchdog,
+custom interpreter), CaptureCoordinator, and HotkeyRegistry. Python: 11
+pytest tests covering `zone_extract.py` and `zonectl`. Authored via the
+project's subagent-driven TDD rules.
 
 ```bash
 swift test
 /tmp/zc-test-venv/bin/python -m pytest tools/tests/
 ```
+
+`swift test` needs a full Xcode toolchain (Command Line Tools ships no
+XCTest). If `xcode-select -p` points at Command Line Tools, run:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
+```
+
+## Packaging notes
+
+`make-app.sh` bundles a self-contained Python venv into
+`Contents/Resources/tools/venv` (a GUI app's `/usr/bin/env python3` resolves
+to the Command Line Tools interpreter, which lacks the extraction
+dependencies). Creating it needs network access at build time for pip.

@@ -77,4 +77,37 @@ final class CaptureCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(store.recentAll().count, 0)
     }
+
+    /// Regression: insertLink signals failure by returning -1 instead of
+    /// throwing. The coordinator must turn that into an error, otherwise the
+    /// caller shows "✓ Page captured" while the row was never written.
+    func testCapturePageThrowsWhenStoreInsertFails() throws {
+        // A directory where the database file should be makes sqlite3_open
+        // fail, so every insert reports failure and returns -1.
+        let tmpDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zonecapture-broken-store-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            atPath: tmpDir.appendingPathComponent("zonecapture.db").path,
+            withIntermediateDirectories: true)
+        let store = Store(rootDirectory: tmpDir.path)
+
+        let result = ExtractionResult(
+            capturePath: "/tmp/page.md",
+            jsonPath: "/tmp/page.json",
+            title: "T",
+            wordCount: 1)
+        let coordinator = CaptureCoordinator(
+            extractor: PageExtractor(runner: FakeExtractionRunner(stub: result)),
+            store: store)
+
+        XCTAssertThrowsError(
+            try coordinator.capturePage(
+                url: "https://example.com", sourceApp: "Safari", comment: nil)
+        ) { error in
+            guard case CaptureError.storeInsertFailed = error else {
+                XCTFail("Expected storeInsertFailed, got \(error)")
+                return
+            }
+        }
+    }
 }

@@ -13,6 +13,18 @@ public enum ExtractionError: Error, Equatable {
     case runnerError(String)
 }
 
+extension ExtractionError: CustomStringConvertible {
+    /// Short, user-presentable description — the capture banner shows this.
+    public var description: String {
+        switch self {
+        case .scriptNotFound: return "extractor script not found"
+        case .executionFailed(let message): return message
+        case .invalidOutput: return "extractor returned unreadable output"
+        case .runnerError(let message): return message
+        }
+    }
+}
+
 /// Result of a successful page extraction.
 public struct ExtractionResult: Codable, Equatable {
     public let capturePath: String
@@ -36,11 +48,33 @@ public protocol ExtractionRunner: Sendable {
 }
 
 /// Runs `tools/zone_extract.py` in a subprocess and parses its JSON stdout.
+///
+/// Two lifecycle hazards are handled here because both have bitten in
+/// practice:
+///
+/// - Both pipes are drained WHILE the child runs. Reading only after
+///   `waitUntilExit()` deadlocks as soon as the child fills a pipe buffer
+///   (~64 KB) — one chatty dependency warning wedges the capture forever.
+/// - A watchdog kills the child after `timeout + watchdogGrace` seconds. The
+///   script's own `--timeout` only bounds socket operations, not DNS lookups,
+///   redirect chains, or pathological parsing.
 public final class PythonExtractionRunner: ExtractionRunner {
     public let scriptPath: String
 
-    public init(scriptPath: String) {
+    /// Interpreter to launch the script with. The installed .app passes its
+    /// bundled venv here because a GUI app's `/usr/bin/env python3` resolves
+    /// to the Command Line Tools interpreter, which lacks the extraction
+    /// dependencies. Nil keeps the old `/usr/bin/env python3` behaviour.
+    public let pythonPath: String?
+
+    /// Extra seconds past `timeout` before the watchdog kills the child.
+    /// Internal (not private) so tests can shrink it.
+    let watchdogGrace: TimeInterval
+
+    public init(scriptPath: String, pythonPath: String? = nil, watchdogGrace: TimeInterval = 15) {
         self.scriptPath = scriptPath
+        self.pythonPath = pythonPath
+        self.watchdogGrace = watchdogGrace
     }
 
     public func run(url: String, outDir: String, timeout: TimeInterval) throws -> ExtractionResult {
@@ -49,34 +83,82 @@ public final class PythonExtractionRunner: ExtractionRunner {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", scriptPath, url, "--out", outDir, "--timeout", String(Int(timeout))]
+        let scriptArgs = [scriptPath, url, "--out", outDir, "--timeout", String(Int(timeout))]
+        if let pythonPath {
+            process.executableURL = URL(fileURLWithPath: pythonPath)
+            process.arguments = scriptArgs
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = ["python3"] + scriptArgs
+        }
 
         let stdout = Pipe()
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
 
+        // Drain both pipes concurrently; the handlers fire on private queues.
+        let lock = NSLock()
+        var outData = Data()
+        var errData = Data()
+        stdout.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            lock.lock()
+            outData.append(chunk)
+            lock.unlock()
+        }
+        stderr.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            lock.lock()
+            errData.append(chunk)
+            lock.unlock()
+        }
+
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+
         do {
             try process.run()
         } catch {
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
             throw ExtractionError.executionFailed(error.localizedDescription)
         }
 
-        process.waitUntilExit()
+        if done.wait(timeout: .now() + timeout + watchdogGrace) == .timedOut {
+            process.terminate()
+            if done.wait(timeout: .now() + 2) == .timedOut, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                _ = done.wait(timeout: .now() + 2)
+            }
+            stdout.fileHandleForReading.readabilityHandler = nil
+            stderr.fileHandleForReading.readabilityHandler = nil
+            throw ExtractionError.executionFailed("timed out after \(Int(timeout))s")
+        }
 
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        let errString = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The child has exited; read whatever is left through EOF.
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+        lock.lock()
+        outData.append(stdout.fileHandleForReading.readDataToEndOfFile())
+        errData.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        lock.unlock()
 
         guard process.terminationStatus == 0 else {
-            let message = errString?.isEmpty == false ? errString! : "exit code \(process.terminationStatus)"
-            throw ExtractionError.executionFailed(message)
+            // The script reports failures as {"error": "..."} on STDOUT with
+            // exit code 1; stderr stays empty in that path. Surface the
+            // payload so the banner can show the actual reason.
+            if let payload = try? JSONSerialization.jsonObject(with: outData) as? [String: Any],
+               let message = payload["error"] as? String {
+                throw ExtractionError.executionFailed(message)
+            }
+            let errString = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw ExtractionError.executionFailed(
+                errString?.isEmpty == false ? errString! : "exit code \(process.terminationStatus)")
         }
 
         // On success the script prints the extraction result JSON.
-        // On failure it prints {"error": "..."} and exits non-zero, so we
-        // only reach here for success.
         return try PageExtractor.parseOutput(outData)
     }
 }

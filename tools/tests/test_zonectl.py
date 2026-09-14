@@ -123,3 +123,41 @@ def test_open_falls_back_to_url_when_no_capture_path():
     )
     assert result.returncode == 0, result.stderr
     assert "https://url.com" in result.stdout
+
+
+def test_list_limit_zero_returns_no_rows():
+    db = _make_db()
+    result = _run(["list", "--limit", "0"], db)
+    assert result.returncode == 0, result.stderr
+    assert "https://url.com" not in result.stdout
+    assert "https://page.com" not in result.stdout
+
+
+def test_open_supports_opener_with_arguments():
+    db = _make_db()
+    env = os.environ.copy()
+    env["ZONE_CAPTURE_DB"] = db
+    env["ZONECTL_OPEN"] = "echo PREFIX"
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "open", "1"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("PREFIX https://url.com")
+
+
+def test_open_reports_opener_failure():
+    db = _make_db()
+    env = os.environ.copy()
+    env["ZONE_CAPTURE_DB"] = db
+    env["ZONECTL_OPEN"] = "false"
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "open", "1"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode != 0, "a failed opener must not exit 0"
+    assert "error" in result.stderr.lower()

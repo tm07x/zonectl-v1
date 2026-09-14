@@ -8,8 +8,9 @@ import ZoneCaptureCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
-    private let hotkey = HotkeyManager()
-    private var pageHotkey: HotkeyManager?
+    /// One manager for every global hotkey; it dispatches Carbon events by
+    /// hotkey ID so the two combos can never swallow each other.
+    private let hotkeys = HotkeyManager()
     private let panel = CapturePanel()
     private var lastReadError: String?
     private var coordinator: CaptureCoordinator?
@@ -45,16 +46,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                      keyEquivalent: "q")
         statusItem.menu = menu
 
-        // Global hotkey (works even when another app is frontmost).
-        hotkey.onTrigger = { [weak self] in self?.showPanel() }
-        hotkey.onRegistrationFailed = { [weak self] status in
-            // Never let the hotkey die silently: rename the first menu entry
-            // so the missing shortcut is visible where the app lives.
-            NSLog("[ZoneCapture] hotkey registration failed (status \(status))")
-            self?.statusItem.menu?.item(at: 0)?.title =
-                "⚠︎ Hotkey not registered (⌘⇧L in use?)"
-        }
-        hotkey.registerDefault()
+        // Global hotkeys (work even when another app is frontmost).
+        hotkeys.register(
+            keyCode: Self.defaultsUInt32("hotkeyKeyCode", fallback: 37),
+            modifiers: Self.defaultsUInt32("hotkeyModifiers", fallback: UInt32(cmdKey | shiftKey)),
+            action: { [weak self] in self?.showPanel() },
+            onFailure: { [weak self] status in
+                // Never let the hotkey die silently: rename the first menu
+                // entry so the missing shortcut is visible where the app lives.
+                NSLog("[ZoneCapture] hotkey registration failed (status \(status))")
+                self?.statusItem.menu?.item(at: 0)?.title =
+                    "⚠︎ Hotkey not registered (⌘⇧L in use?)"
+            })
 
         NSLog("[ZoneCapture] running. DB: \(Store.shared.databasePath)")
 
@@ -84,32 +87,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             inDirectory: "tools") {
             return bundled
         }
-        // Development fallback: run from the repo root.
+        // Development fallback: locate the script relative to this source
+        // file so running the SwiftPM binary from any working directory works.
+        // #filePath = <repo>/Sources/ZoneCapture/AppDelegate.swift
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ZoneCapture/
+            .deletingLastPathComponent()  // Sources/
+            .deletingLastPathComponent()  // <repo>/
+        let sourceRelative = repoRoot.appendingPathComponent("tools/zone_extract.py").path
+        if FileManager.default.fileExists(atPath: sourceRelative) {
+            return sourceRelative
+        }
         return "./tools/zone_extract.py"
+    }
+
+    /// The installed .app bundles its own Python environment (see
+    /// make-app.sh): a GUI app's `/usr/bin/env python3` resolves to the
+    /// Command Line Tools interpreter, which has no readability/markdownify,
+    /// so every capture would fail. Returns nil in development, where the
+    /// runner falls back to the interactive shell's `python3`.
+    private func findBundledPython() -> String? {
+        guard let resources = Bundle.main.resourcePath else { return nil }
+        let candidate = (resources as NSString)
+            .appendingPathComponent("tools/venv/bin/python3")
+        return FileManager.default.fileExists(atPath: candidate) ? candidate : nil
     }
 
     private func setupPageCaptureCoordinator() {
         let scriptPath = findZoneExtractScript()
-        let runner = PythonExtractionRunner(scriptPath: scriptPath)
+        let runner = PythonExtractionRunner(
+            scriptPath: scriptPath,
+            pythonPath: findBundledPython())
         let extractor = PageExtractor(runner: runner)
         coordinator = CaptureCoordinator(extractor: extractor, store: Store.shared)
         NSLog("[ZoneCapture] page extractor script: \(scriptPath)")
     }
 
     private func setupPageCaptureHotkey() {
-        let pageHotkey = HotkeyManager()
-        pageHotkey.onTrigger = { [weak self] in self?.capturePageContent() }
-        pageHotkey.onRegistrationFailed = { [weak self] status in
-            NSLog("[ZoneCapture] page-capture hotkey registration failed (status \(status))")
-            self?.panel.showBanner("⚠ ⌘⇧⌥L hotkey not registered")
+        hotkeys.register(
+            keyCode: Self.defaultsUInt32("pageHotkeyKeyCode", fallback: 37),
+            modifiers: Self.defaultsUInt32(
+                "pageHotkeyModifiers",
+                fallback: UInt32(cmdKey | shiftKey | optionKey)),
+            action: { [weak self] in self?.capturePageContent() },
+            onFailure: { [weak self] status in
+                NSLog("[ZoneCapture] page-capture hotkey registration failed (status \(status))")
+                self?.panel.showBanner("⚠ ⌘⇧⌥L hotkey not registered")
+            })
+    }
+
+    /// Reads an unsigned hotkey value from UserDefaults without trapping on
+    /// out-of-range input (`defaults write … -int -5` must not crash launch).
+    private static func defaultsUInt32(_ key: String, fallback: UInt32) -> UInt32 {
+        guard let value = UserDefaults.standard.object(forKey: key) as? Int,
+              let unsigned = UInt32(exactly: value) else {
+            return fallback
         }
-        let defaults = UserDefaults.standard
-        let keyCode = UInt32(defaults.object(forKey: "pageHotkeyKeyCode") as? Int ?? 37)
-        let modifiers = UInt32(
-            defaults.object(forKey: "pageHotkeyModifiers") as? Int
-                ?? (cmdKey | shiftKey | optionKey))
-        pageHotkey.register(keyCode: keyCode, modifiers: modifiers)
-        self.pageHotkey = pageHotkey
+        return unsigned
     }
 
     /// Relaunch ZoneCapture at login so the ⌘⇧L hotkey survives reboots.
@@ -207,10 +241,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.panel.showBanner("✓ Page captured")
                 }
             } catch {
-                DispatchQueue.main.async {
-                    self.panel.showBanner("✗ Page capture failed")
-                }
+                // Surface the actual reason (extraction error, timeout,
+                // database write failure) — a bare "failed" banner made these
+                // undiagnosable without Console.app.
+                let detail = String(describing: error)
                 NSLog("[ZoneCapture] page capture failed: \(error)")
+                DispatchQueue.main.async {
+                    self.panel.showBanner("✗ " + String(detail.prefix(60)))
+                }
             }
         }
     }

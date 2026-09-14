@@ -20,7 +20,7 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -52,7 +52,7 @@ def fetch(con, where=(), params=(), order="created_at DESC", limit=None):
     if where:
         sql += f" WHERE {' AND '.join(where)}"
     sql += f" ORDER BY {order}"
-    if limit:
+    if limit is not None:
         sql += f" LIMIT {int(limit)}"
     return con.execute(sql, params).fetchall(), cols
 
@@ -111,8 +111,15 @@ def main():
         target = row["capture_path"] or row["url"]
         if not target:
             sys.exit(f"error: capture {args.id} has neither URL nor markdown file")
-        opener = os.environ.get("ZONECTL_OPEN", "open")
-        subprocess.run([opener, target])
+        # shlex.split so ZONECTL_OPEN may carry arguments ("open -a Marked");
+        # the override is still argv-only, never shell-evaluated.
+        opener = shlex.split(os.environ.get("ZONECTL_OPEN", "open"))
+        try:
+            result = subprocess.run(opener + [target])
+        except FileNotFoundError:
+            sys.exit(f"error: opener not found: {opener[0]}")
+        if result.returncode != 0:
+            sys.exit(f"error: failed to open {target}")
         return
 
     if args.cmd == "list":

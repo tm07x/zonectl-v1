@@ -1,39 +1,70 @@
 import AppKit
 import Carbon
+import ZoneCaptureCore
 
-/// Registers a single system-wide hotkey using the Carbon `RegisterEventHotKey`
-/// API. This is still the most reliable way to get a global shortcut on macOS
-/// without pulling in a third-party dependency.
+/// Registers system-wide hotkeys using the Carbon `RegisterEventHotKey` API.
+///
+/// One instance manages any number of hotkeys. A single Carbon event handler
+/// is installed lazily on first registration; every hotkey gets a unique
+/// `EventHotKeyID.id` from the shared `HotkeyRegistry`, and the handler reads
+/// the ID out of the delivered event to find the matching action.
+///
+/// This matters because Carbon dispatches `kEventHotKeyPressed` to every
+/// handler on the application target and the first one returning `noErr`
+/// consumes the event. The previous one-handler-per-hotkey design let the
+/// most recently installed handler swallow every combo, so ⌘⇧L triggered the
+/// page-capture action instead of opening the panel.
 final class HotkeyManager {
     private var eventHandler: EventHandlerRef?
-    private var hotKeyRef: EventHotKeyRef?
-    var onTrigger: (() -> Void)?
+    private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
+    private let registry = HotkeyRegistry()
 
-    /// Called when the OS refuses the registration (typically because another
-    /// app already owns the combo). The UI must surface this — a silently dead
-    /// hotkey is the worst failure mode of this app.
-    var onRegistrationFailed: ((OSStatus) -> Void)?
+    /// 'ZONE' — identifies our hotkeys to Carbon.
+    private let signature = OSType(0x5A4F4E45)
 
-    /// Default binding: Cmd + Shift + L  (L for "link"). KeyCode 37 == 'L'.
-    ///
-    /// Configurable without code, e.g. to switch to ⌥⇧L (keyCode 37,
-    /// modifiers cmdKey|optionKey… see Carbon masks below):
-    ///
-    ///     defaults write com.grokink.zonecapture hotkeyKeyCode -int 37
-    ///     defaults write com.grokink.zonecapture hotkeyModifiers -int 2816
+    /// Registers a global hotkey. `onFailure` is called when the OS refuses
+    /// the registration (typically because another app owns the combo) — the
+    /// UI must surface this; a silently dead hotkey is the worst failure mode.
     ///
     /// Carbon modifier masks: cmdKey 256 · shiftKey 512 · optionKey 2048 ·
-    /// controlKey 4096 (combine by adding). Restart the app to apply.
-    func registerDefault() {
-        let defaults = UserDefaults.standard
-        let keyCode = UInt32(defaults.object(forKey: "hotkeyKeyCode") as? Int ?? 37)
-        let modifiers = UInt32(
-            defaults.object(forKey: "hotkeyModifiers") as? Int ?? (cmdKey | shiftKey))
-        register(keyCode: keyCode, modifiers: modifiers)
+    /// controlKey 4096 (combine by adding). Restart the app to apply changes.
+    func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        action: @escaping () -> Void,
+        onFailure: ((OSStatus) -> Void)? = nil
+    ) {
+        installHandlerIfNeeded()
+
+        let id = registry.register(action)
+        let hotKeyID = EventHotKeyID(signature: signature, id: id)
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &ref)
+        guard status == noErr, let ref else {
+            NSLog("[ZoneCapture] RegisterEventHotKey failed (\(status)) — combo likely owned by another app")
+            registry.unregister(id: id)
+            onFailure?(status)
+            return
+        }
+        hotKeyRefs[id] = ref
     }
 
-    func register(keyCode: UInt32, modifiers: UInt32) {
-        unregister()
+    func unregisterAll() {
+        for (id, ref) in hotKeyRefs {
+            UnregisterEventHotKey(ref)
+            registry.unregister(id: id)
+        }
+        hotKeyRefs.removeAll()
+    }
+
+    private func installHandlerIfNeeded() {
+        guard eventHandler == nil else { return }
 
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -41,48 +72,47 @@ final class HotkeyManager {
 
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
-        let handlerStatus = InstallEventHandler(
+        let status = InstallEventHandler(
             GetApplicationEventTarget(),
             { (_, eventRef, userData) -> OSStatus in
-                guard let userData else { return noErr }
+                guard let userData, let eventRef else { return noErr }
                 let manager = Unmanaged<HotkeyManager>
                     .fromOpaque(userData).takeUnretainedValue()
-                DispatchQueue.main.async { manager.onTrigger?() }
+
+                // Identify WHICH hotkey fired. Without this, the handler can
+                // only guess — and guessing wrong hijacks the other hotkey.
+                var hotKeyID = EventHotKeyID()
+                let paramStatus = GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID)
+                guard paramStatus == noErr, hotKeyID.signature == manager.signature else {
+                    // Not one of ours: refuse to consume it.
+                    return OSStatus(eventNotHandledErr)
+                }
+
+                DispatchQueue.main.async {
+                    manager.registry.dispatch(id: hotKeyID.id)
+                }
                 return noErr
             },
             1,
             &spec,
             selfPtr,
             &eventHandler)
-        if handlerStatus != noErr {
-            NSLog("[ZoneCapture] InstallEventHandler failed: \(handlerStatus)")
-        }
-
-        let hotKeyID = EventHotKeyID(signature: OSType(0x5A4F4E45), id: 1)  // 'ZONE'
-        let status = RegisterEventHotKey(
-            keyCode,
-            modifiers,
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &hotKeyRef)
         if status != noErr {
-            NSLog("[ZoneCapture] RegisterEventHotKey failed (\(status)) — combo likely owned by another app")
-            hotKeyRef = nil
-            onRegistrationFailed?(status)
+            NSLog("[ZoneCapture] InstallEventHandler failed: \(status)")
         }
     }
 
-    func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
-        }
+    deinit {
+        unregisterAll()
         if let eventHandler {
             RemoveEventHandler(eventHandler)
-            self.eventHandler = nil
         }
     }
-
-    deinit { unregister() }
 }
