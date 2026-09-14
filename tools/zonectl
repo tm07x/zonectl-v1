@@ -20,14 +20,17 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 
-DB_PATH = os.path.expanduser(
-    "~/Library/Application Support/ZoneCapture/zonecapture.db")
+DB_PATH = os.environ.get(
+    "ZONE_CAPTURE_DB",
+    os.path.expanduser("~/Library/Application Support/ZoneCapture/zonecapture.db"))
 
-COLUMNS = ["id", "url", "title", "comment", "source_app", "kind", "topic",
-           "created_at"]
+COLUMNS = ["id", "url", "title", "comment", "source_app", "kind",
+           "capture_path", "topic", "created_at"]
 
 
 def connect():
@@ -66,8 +69,10 @@ def print_rows(rows, cols):
         topic = f" [{r['topic']}]" if "topic" in cols and r["topic"] else ""
         title = f" — {r['title']}" if r["title"] else ""
         comment = f"  “{r['comment']}”" if r["comment"] else ""
+        cp = r["capture_path"] if "capture_path" in cols else None
+        capture = f" [md: {cp}]" if cp else ""
         print(f"{r['id']:>4}  {fmt_when(r['created_at'])}  {r['url']}{title}"
-              f"{topic}{comment}  ({r['source_app'] or '?'}, {r['kind']})")
+              f"{topic}{comment}{capture}  ({r['source_app'] or '?'}, {r['kind']})")
 
 
 def main():
@@ -85,6 +90,9 @@ def main():
     sp = sub.add_parser("export", help="export all captures")
     sp.add_argument("--format", choices=["md", "json"], default="md")
 
+    sp = sub.add_parser("open", help="open the capture markdown or URL")
+    sp.add_argument("id", type=int)
+
     sub.add_parser("db", help="print the database path")
 
     args = p.parse_args()
@@ -92,6 +100,19 @@ def main():
 
     if args.cmd == "db":
         print(DB_PATH)
+        return
+
+    if args.cmd == "open":
+        row = con.execute(
+            "SELECT url, capture_path FROM links WHERE id = ?;", (args.id,)
+        ).fetchone()
+        if not row:
+            sys.exit(f"error: no capture with id {args.id}")
+        target = row["capture_path"] or row["url"]
+        if not target:
+            sys.exit(f"error: capture {args.id} has neither URL nor markdown file")
+        opener = os.environ.get("ZONECTL_OPEN", "open")
+        subprocess.run([opener, target])
         return
 
     if args.cmd == "list":
