@@ -108,7 +108,7 @@ final class PageExtractorTests: XCTestCase {
 
 // MARK: - Test doubles
 
-private final class FakeExtractionRunner: ExtractionRunner, @unchecked Sendable {
+final class FakeExtractionRunner: ExtractionRunner, @unchecked Sendable {
     var stub: ExtractionResult?
     var error: Error?
     var lastURL: String?
