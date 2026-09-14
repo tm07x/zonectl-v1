@@ -160,6 +160,19 @@ public final class Store {
         return sqlite3_last_insert_rowid(db)
     }
 
+    /// A fully populated capture row, including kind and capture_path.
+    public struct CaptureRow: Equatable {
+        public let id: Int64
+        public let url: String
+        public let title: String?
+        public let comment: String?
+        public let sourceApp: String?
+        public let kind: String
+        public let capturePath: String?
+        public let topic: String?
+        public let created: Date
+    }
+
     /// Returns the most recent N captures, newest first.
     public func recent(limit: Int = 25) -> [(id: Int64, url: String, title: String?, comment: String?, created: Date)] {
         let sql = "SELECT id, url, title, comment, created_at FROM links ORDER BY created_at DESC LIMIT ?;"
@@ -178,6 +191,44 @@ public final class Store {
             let comment = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
             let ts = sqlite3_column_double(stmt, 4)
             rows.append((id, url, title, comment, Date(timeIntervalSince1970: ts)))
+        }
+        return rows
+    }
+
+    /// Returns the most recent N captures with all columns, newest first.
+    public func recentAll(limit: Int = 25) -> [CaptureRow] {
+        let sql = """
+        SELECT id, url, title, comment, source_app, kind, capture_path, topic, created_at
+        FROM links ORDER BY created_at DESC LIMIT ?;
+        """
+        var stmt: OpaquePointer?
+        var rows: [CaptureRow] = []
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            report(.queryFailed(String(cString: sqlite3_errmsg(db))))
+            return []
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_int64(stmt, 1, Int64(limit))
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let id = sqlite3_column_int64(stmt, 0)
+            let url = String(cString: sqlite3_column_text(stmt, 1))
+            let title = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
+            let comment = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
+            let sourceApp = sqlite3_column_text(stmt, 4).map { String(cString: $0) }
+            let kind = String(cString: sqlite3_column_text(stmt, 5))
+            let capturePath = sqlite3_column_text(stmt, 6).map { String(cString: $0) }
+            let topic = sqlite3_column_text(stmt, 7).map { String(cString: $0) }
+            let ts = sqlite3_column_double(stmt, 8)
+            rows.append(CaptureRow(
+                id: id,
+                url: url,
+                title: title,
+                comment: comment,
+                sourceApp: sourceApp,
+                kind: kind,
+                capturePath: capturePath,
+                topic: topic,
+                created: Date(timeIntervalSince1970: ts)))
         }
         return rows
     }

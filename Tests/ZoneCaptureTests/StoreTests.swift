@@ -241,4 +241,65 @@ final class StoreTests: XCTestCase {
         _ = Store.shared.recent(limit: 0)
         // recent(limit: 0) should return an empty array, not crash.
     }
+
+    // MARK: - recentAll / CaptureRow
+
+    func testRecentAllReturnsKindAndCapturePath() {
+        let (store, _) = makeTempStore()
+        let urlId = store.insertLink(
+            url: "https://url.com", title: nil,
+            comment: nil, sourceApp: nil, kind: "url")
+        let captureId = store.insertLink(
+            url: "https://page.com", title: "Page",
+            comment: nil, sourceApp: "Safari",
+            kind: "capture",
+            capturePath: "/tmp/captures/page.md")
+
+        let rows = store.recentAll(limit: 10)
+        XCTAssertEqual(rows.count, 2)
+
+        let urlRow = rows.first { $0.id == urlId }
+        let captureRow = rows.first { $0.id == captureId }
+
+        XCTAssertNotNil(urlRow)
+        XCTAssertEqual(urlRow?.kind, "url")
+        XCTAssertNil(urlRow?.capturePath)
+
+        XCTAssertNotNil(captureRow)
+        XCTAssertEqual(captureRow?.kind, "capture")
+        XCTAssertEqual(captureRow?.capturePath, "/tmp/captures/page.md")
+        XCTAssertEqual(captureRow?.title, "Page")
+        XCTAssertEqual(captureRow?.sourceApp, "Safari")
+    }
+
+    func testRecentAllReturnsRowsNewestFirst() throws {
+        let (store, _) = makeTempStore()
+        let id1 = store.insertLink(url: "https://first.com", title: nil, comment: nil, sourceApp: nil, kind: "url")
+        Thread.sleep(forTimeInterval: 0.05)
+        let id2 = store.insertLink(url: "https://second.com", title: nil, comment: nil, sourceApp: nil, kind: "url")
+
+        let rows = store.recentAll(limit: 10)
+        XCTAssertEqual(rows.map { $0.id }, [id2, id1])
+    }
+
+    func testRecentAllRespectsLimit() {
+        let (store, _) = makeTempStore()
+        for i in 0..<5 {
+            store.insertLink(url: "https://item-\(i).com", title: nil, comment: nil, sourceApp: nil, kind: "url")
+        }
+        XCTAssertEqual(store.recentAll(limit: 2).count, 2)
+    }
+
+    func testRecentAllDoesNotBreakRecent() {
+        let (store, _) = makeTempStore()
+        store.insertLink(url: "https://both.com", title: "T", comment: "C", sourceApp: "Arc", kind: "url")
+
+        let oldRows = store.recent()
+        let newRows = store.recentAll()
+
+        XCTAssertEqual(oldRows.count, 1)
+        XCTAssertEqual(newRows.count, 1)
+        XCTAssertEqual(oldRows[0].url, newRows[0].url)
+        XCTAssertEqual(oldRows[0].id, newRows[0].id)
+    }
 }
