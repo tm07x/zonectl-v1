@@ -1,6 +1,6 @@
 # ZoneCapture
 
-A tiny macOS app for capturing URLs and notes **without leaving your flow**.
+A tiny macOS app for capturing URLs, notes, and page content **without leaving your flow**.
 
 You're deep in a task, you hit a link worth keeping — instead of swapping spaces
 and breaking your zone, you press **⌘⇧L**. A small floating panel appears with
@@ -8,10 +8,14 @@ the URL of your frontmost browser tab already filled in (the tab title is
 saved along with it). You type a one-line note, hit **Return**, and it's saved
 to a local SQLite database. The panel disappears. You never left the keyboard.
 
-This is v0.1: the **core feature** from the project README, working end-to-end.
-Features 2–4 (page-content parsing, non-browser app screenshots, the durable
-zone-mode AI chat with a routing DSL) are stubbed in the architecture and noted
-under **Roadmap** below.
+Press **⌘⇧⌥L** to capture the *full page content* instead: ZoneCapture downloads
+the page, extracts readable Markdown + YAML frontmatter, writes a `.md`/`.json`
+sidecar to `captures/`, and records it as `kind='capture'` with a pointer to the
+file. Read it later with `zonectl open <id>`.
+
+This is v0.2: core URL capture (v0.1) **plus Feature 2 page-content extraction**,
+both working end-to-end. Features 3–4 (non-browser app screenshots, the durable
+zone-mode AI chat + routing DSL) are noted under **Roadmap** below.
 
 ## Build & install
 
@@ -31,6 +35,8 @@ System Settings → General → Login Items & Extensions.
 
 ## Using it
 
+### URL capture (⌘⇧L)
+
 1. Open a browser and navigate to a page you want to keep.
 2. Press **⌘⇧L** (or click the bookmark icon in the menu bar → "Capture
    frontmost URL").
@@ -38,10 +44,18 @@ System Settings → General → Login Items & Extensions.
 4. Press **Return** to save (or **Esc** to cancel). A brief "✓ Captured"
    banner confirms it landed.
 
+### Page-content capture (⌘⇧⌥L)
+
+1. Open a browser on the page you want to read later.
+2. Press **⌘⇧⌥L**. ZoneCapture downloads the page, extracts the main content,
+   and writes a Markdown file + JSON sidecar under `captures/`.
+3. A "✓ Page captured" banner confirms it. No panel to dismiss.
+
 Menu-bar menu:
-- **Capture frontmost URL** — same as the hotkey.
-- **Recent captures…** — shows the last 12 rows (URL, tab title, note,
-  timestamp).
+- **Capture frontmost URL** — same as ⌘⇧L.
+- **Capture page content** — same as ⌘⇧⌥L.
+- **Recent captures…** — shows the last 12 rows (URL/tab title/note,
+  timestamp, kind, capture path).
 - **Reveal database in Finder** — opens the folder holding `zonecapture.db`.
 
 ## Where data lives
@@ -76,11 +90,17 @@ the panel with an empty URL field so you can paste.
 
 ## Hotkey configuration
 
-Default is ⌘⇧L. Change it without code (restart the app to apply):
+- URL capture default: **⌘⇧L** (`hotkeyKeyCode` / `hotkeyModifiers`).
+- Page-content capture default: **⌘⇧⌥L** (`pageHotkeyKeyCode` / `pageHotkeyModifiers`).
+
+Change them without code (restart the app to apply):
 
 ```bash
 defaults write com.grokink.zonecapture hotkeyKeyCode -int 37
-defaults write com.grokink.zonecapture hotkeyModifiers -int 2816   # ⌘⌥L
+defaults write com.grokink.zonecapture hotkeyModifiers -int 2816      # ⌘⌥L
+
+defaults write com.grokink.zonecapture pageHotkeyKeyCode -int 37
+defaults write com.grokink.zonecapture pageHotkeyModifiers -int 3328   # ⌘⇧⌥L
 ```
 
 Carbon modifier masks: cmdKey 256 · shiftKey 512 · optionKey 2048 ·
@@ -104,24 +124,32 @@ Nothing fails silently:
 
 ```
 Sources/ZoneCapture/
-  main.swift          entry point; LSUIElement accessory app
-  AppDelegate.swift   menu-bar item + hotkey wiring + recent/reveal actions
-  HotkeyManager.swift Carbon RegisterEventHotKey global shortcut
-  CapturePanel.swift  floating NSPanel: URL field, note field, Save/Cancel
-  URLFetcher.swift    per-browser AppleScript to read the active tab URL
-  Store.swift         SQLite wrapper; fixed-location DB + captures dir
+  main.swift             entry point; LSUIElement accessory app
+  AppDelegate.swift      menu-bar item + both hotkeys + recent/reveal actions
+  HotkeyManager.swift    Carbon RegisterEventHotKey global shortcut
+  CapturePanel.swift     floating NSPanel: URL field, note field, Save/Cancel
+  URLFetcher.swift       per-browser AppleScript / Accessibility URL fetch
+Sources/ZoneCaptureCore/
+  Store.swift            SQLite wrapper; fixed-location DB + captures dir
+  Secrets.swift          Keychain-backed SecretStore (AI-key groundwork)
+  PageExtractor.swift    ExtractionRunner protocol + Python script runner
+  CaptureCoordinator.swift wires extraction → Store.insertLink(kind='capture')
 Resources/
-  Info.plist          LSUIElement, Apple Events usage description
+  Info.plist             LSUIElement, Apple Events usage description
   ZoneCapture.entitlements
-make-app.sh           build + assemble + (ad-hoc) sign + install/launch
+tools/
+  zone_extract.py        fetch page → readability → Markdown + frontmatter + JSON
+  zonectl              read-side CLI: list, search, export, open <id>
+make-app.sh            build + bundle tools + (ad-hoc) sign + install/launch
 ```
 
-## Roadmap (features 2–4 from the project README)
+See `docs/zonecapture-architecture.html` for an interactive diagram.
 
-- **Feature 2 — page content:** grab the page, strip noise, write Markdown +
-  frontmatter to `captures/`, store the file path in `links.capture_path`.
-  Likely uses a readability pass + the Cloudflare browser-rendering connector
-  for JS-heavy pages.
+## Roadmap (features 3–4 from the project README)
+
+- **Feature 2 — page content:** ✅ implemented. Downloads the page, extracts
+  Markdown + frontmatter, writes `.md`/`.json` to `captures/`, stores
+  `kind='capture'` with `capture_path`. Read it with `zonectl open <id>`.
 - **Feature 3 — non-browser apps:** when the frontmost app isn't a browser,
   capture its name + a window screenshot (`screencapture -l`), run the image
   through a vision model for text/context, let you comment, then store with
@@ -133,5 +161,11 @@ make-app.sh           build + assemble + (ad-hoc) sign + install/launch
 
 ## Tests
 
-Authored by an outside agent (not self-written, per project rules) and reviewed
-by a third agent. See `Tests/`.
+Swift: 47 XCTest tests covering Store, URLFetcher, Secrets, PageExtractor,
+and CaptureCoordinator. Python: 7 pytest tests covering `zone_extract.py` and
+`zonectl`. Authored via the project's subagent-driven TDD rules.
+
+```bash
+swift test
+/tmp/zc-test-venv/bin/python -m pytest tools/tests/
+```
