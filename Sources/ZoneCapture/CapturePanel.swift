@@ -62,7 +62,11 @@ final class CapturePanel {
     }
 
     private func apply(_ captured: URLFetcher.Result) {
-        urlField.stringValue = captured.url
+        // Don't clobber text the user has already typed while the browser
+        // script was still in flight.
+        if urlField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
+            urlField.stringValue = captured.url
+        }
         sourceTitle = (captured.title?.isEmpty == false) ? captured.title : nil
 
         switch captured.error {

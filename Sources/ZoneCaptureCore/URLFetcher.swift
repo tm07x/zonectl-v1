@@ -193,8 +193,9 @@ public enum URLFetcher {
     /// user to grant Accessibility permission once.
     static func firefoxTabInfo(pid: pid_t) -> (url: String, title: String?)? {
         let appElement = AXUIElementCreateApplication(pid)
-        guard let windowRef = axAttribute(appElement, kAXFocusedWindowAttribute) else { return nil }
-        let window = windowRef as! AXUIElement  // CFTypeRef here is the window element
+        guard let windowRef = axAttribute(appElement, kAXFocusedWindowAttribute),
+              CFGetTypeID(windowRef) == AXUIElementGetTypeID() else { return nil }
+        let window = unsafeDowncast(windowRef, to: AXUIElement.self)
         let title = axAttribute(window, kAXTitleAttribute) as? String
 
         var found: String?
@@ -219,7 +220,8 @@ public enum URLFetcher {
     private static func walk(_ elem: AXUIElement, depth: Int, visit: (AXUIElement) -> Bool) {
         guard depth < 10 else { return }
         guard visit(elem) else { return }
-        guard let childrenRef = axAttribute(elem, kAXChildrenAttribute) else { return }
+        guard let childrenRef = axAttribute(elem, kAXChildrenAttribute),
+              CFGetTypeID(childrenRef) == CFArrayGetTypeID() else { return }
         let children = unsafeDowncast(childrenRef, to: CFArray.self)
         for i in 0..<CFArrayGetCount(children) {
             guard let raw = CFArrayGetValueAtIndex(children, i) else { continue }
