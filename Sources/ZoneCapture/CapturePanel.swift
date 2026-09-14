@@ -258,6 +258,10 @@ final class CapturePanel {
         panel.orderOut(nil)
     }
 
+    func showBanner(_ text: String) {
+        flashBanner(text)
+    }
+
     private func flashBanner(_ text: String) {
         // Brief visual confirmation (or error notice). Reuses one window.
         if bannerWindow == nil {

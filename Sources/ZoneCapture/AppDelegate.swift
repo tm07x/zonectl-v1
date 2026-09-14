@@ -1,15 +1,18 @@
 import AppKit
+import Carbon
 import ServiceManagement
 import ZoneCaptureCore
 
-/// App delegate: sets up the menu-bar item, the global hotkey, and owns the
+/// App delegate: sets up the menu-bar item, the global hotkeys, and owns the
 /// single shared capture panel.
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyManager()
+    private var pageHotkey: HotkeyManager?
     private let panel = CapturePanel()
     private var lastReadError: String?
+    private var coordinator: CaptureCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar item — a small bookmark glyph.
@@ -25,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                      action: #selector(showPanel),
                      keyEquivalent: "l")
             .keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(withTitle: "Capture page content",
+                     action: #selector(capturePageContent),
+                     keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Recent captures…",
                      action: #selector(showRecent),
@@ -64,6 +70,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         registerLoginItem()
+        setupPageCaptureCoordinator()
+        setupPageCaptureHotkey()
+    }
+
+    /// Locates `zone_extract.py`, preferring the bundled copy inside
+    /// `Contents/Resources/tools`, falling back to a repo-relative path
+    /// when running the raw SwiftPM binary during development.
+    private func findZoneExtractScript() -> String {
+        if let bundled = Bundle.main.path(
+            forResource: "zone_extract",
+            ofType: "py",
+            inDirectory: "tools") {
+            return bundled
+        }
+        // Development fallback: run from the repo root.
+        return "./tools/zone_extract.py"
+    }
+
+    private func setupPageCaptureCoordinator() {
+        let scriptPath = findZoneExtractScript()
+        let runner = PythonExtractionRunner(scriptPath: scriptPath)
+        let extractor = PageExtractor(runner: runner)
+        coordinator = CaptureCoordinator(extractor: extractor, store: Store.shared)
+        NSLog("[ZoneCapture] page extractor script: \(scriptPath)")
+    }
+
+    private func setupPageCaptureHotkey() {
+        let pageHotkey = HotkeyManager()
+        pageHotkey.onTrigger = { [weak self] in self?.capturePageContent() }
+        pageHotkey.onRegistrationFailed = { [weak self] status in
+            NSLog("[ZoneCapture] page-capture hotkey registration failed (status \(status))")
+            self?.panel.showBanner("⚠ ⌘⇧⌥L hotkey not registered")
+        }
+        let defaults = UserDefaults.standard
+        let keyCode = UInt32(defaults.object(forKey: "pageHotkeyKeyCode") as? Int ?? 37)
+        let modifiers = UInt32(
+            defaults.object(forKey: "pageHotkeyModifiers") as? Int
+                ?? (cmdKey | shiftKey | optionKey))
+        pageHotkey.register(keyCode: keyCode, modifiers: modifiers)
+        self.pageHotkey = pageHotkey
     }
 
     /// Relaunch ZoneCapture at login so the ⌘⇧L hotkey survives reboots.
@@ -127,5 +173,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func quit() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Feature 2: page-content capture
+
+    @objc private func capturePageContent() {
+        guard coordinator != nil else {
+            panel.showBanner("✗ Page capture not configured")
+            return
+        }
+        guard let front = URLFetcher.detectFrontmost() else {
+            panel.showBanner("⚠ No frontmost app")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let captured = URLFetcher.capture(app: front)
+
+            guard !captured.url.isEmpty else {
+                DispatchQueue.main.async {
+                    self.panel.showBanner("⚠ No URL from \(captured.appName)")
+                }
+                return
+            }
+
+            do {
+                _ = try self.coordinator?.capturePage(
+                    url: captured.url,
+                    sourceApp: front.name,
+                    comment: nil)
+                DispatchQueue.main.async {
+                    self.panel.showBanner("✓ Page captured")
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.panel.showBanner("✗ Page capture failed")
+                }
+                NSLog("[ZoneCapture] page capture failed: \(error)")
+            }
+        }
     }
 }

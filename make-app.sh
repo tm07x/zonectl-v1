@@ -18,10 +18,15 @@ BIN_PATH="$(swift build -c release --arch arm64 --show-bin-path)"
 echo ">> Assembling .app bundle at $APP_BUNDLE"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
+mkdir -p "$APP_BUNDLE/Contents/Resources/tools"
 
 cp "$BIN_PATH/ZoneCapture" "$APP_BUNDLE/Contents/MacOS/ZoneCapture"
 cp "Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+
+# Bundle the Python page-extraction helper so the installed app can find it
+# without depending on the repo being present.
+cp "tools/zone_extract.py" "$APP_BUNDLE/Contents/Resources/tools/zone_extract.py"
+cp "tools/requirements.txt" "$APP_BUNDLE/Contents/Resources/tools/requirements.txt"
 
 # Make the binary ad-hoc signed so Gatekeeper/local-first launch is happy.
 codesign --force --sign - --entitlements Resources/ZoneCapture.entitlements "$APP_BUNDLE" 2>/dev/null || \
