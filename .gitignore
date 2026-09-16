@@ -16,3 +16,7 @@ __pycache__/
 # Xcode
 .swiftpm/xcode/xcuserdata/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Isolated implementation workspaces and local review evidence
+.worktrees/
+.superpowers/sdd/
