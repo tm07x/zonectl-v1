@@ -1,7 +1,7 @@
 # Local clean-data API and explicit outbound transfers
 
 Date: 2026-09-16
-Status: Design approved in conversation; written-spec review pending.
+Status: Written spec approved in conversation; implementation is a later, separately planned phase.
 Repository baseline: `462ef8e` (documentation); app baseline: `9c668cf`.
 
 ## Goal and boundaries

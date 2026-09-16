@@ -1,7 +1,7 @@
 # Native GUI testing and diagnostic handoffs
 
 Date: 2026-09-16
-Status: Revised design approved in conversation; revised written-spec review pending.
+Status: Revised written spec approved in conversation; implementation is separately phased.
 Repository baseline: `462ef8e` (documentation); app baseline: `9c668cf`.
 
 ## Revision and delivery order

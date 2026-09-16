@@ -1,7 +1,7 @@
 # Native page extraction, without Python
 
 Date: 2026-09-16
-Status: Design approved in conversation; written-spec review pending.
+Status: Written spec approved in conversation; phase-1 implementation planning authorized.
 Repository baseline: `462ef8e` (documentation); app baseline: `9c668cf`.
 
 ## Goal and hard constraint
@@ -20,6 +20,10 @@ This is phase 1 of the
 It precedes that suite and the
 [local data-exchange phase](2026-09-16-local-data-exchange-design.md).
 No implementation is asserted by this design document.
+
+The phase-1 execution plan is
+[Native Page Extraction Implementation Plan](../plans/2026-09-16-native-page-extraction.md).
+Preparing this plan does not authorize installation or a remote push.
 
 ## Current implementation to replace
 
