@@ -1,8 +1,29 @@
 # Native GUI testing and diagnostic handoffs
 
 Date: 2026-09-16
-Status: Design approved in conversation; written-spec review pending.
-Repository baseline: `9c668cf`
+Status: Revised design approved in conversation; revised written-spec review pending.
+Repository baseline: `462ef8e` (documentation); app baseline: `9c668cf`.
+
+## Revision and delivery order
+
+The owner requires Swift-only core functionality, with Swift + Rust acceptable
+only as an explicit future architecture choice. Python is not an acceptable
+application dependency. The implementation selected here is Swift, not Rust.
+Existing macOS frameworks, system SQLite, and browser Automation remain in use.
+
+The approved work is split into three separately planned and verified phases:
+
+1. [Native page extraction](2026-09-16-native-page-extraction-design.md):
+   remove the Python runtime dependency while preserving existing captures.
+2. This document: shared fault codes, everyday diagnostic handoffs, and real
+   GUI tests against that native build.
+3. [Local data exchange](2026-09-16-local-data-exchange-design.md):
+   authenticated localhost import/export, external topic updates, and explicit
+   outbound HTTPS/S3 transfers, extending the same diagnostic contract.
+
+Each phase gets its own implementation plan and verification gate. This revision
+does not claim any of these changes have already been implemented. In particular,
+the currently installed app still uses Python until phase 1 replaces it.
 
 ## Goal
 
@@ -35,6 +56,9 @@ and SQLite result codes remain separate evidence fields.
 - `AppDelegate` registers a login item at startup.
 - Existing tests exercise core logic and subprocess behavior, not the actual
   window, global shortcut, focus, or browser interaction.
+- Page extraction currently launches Python and the packaging script bundles a
+  virtual environment. Phase 1 replaces it with compiled Swift code before this
+  GUI suite is accepted as evidence for the native-only requirement.
 - Errors currently use transient banners and NSLog messages. There is no
   durable, versioned incident report or external GUI-test supervisor.
 
@@ -50,11 +74,15 @@ and SQLite result codes remain separate evidence fields.
 6. Tests of the diagnostic system itself, including termination and hangs.
 7. Local JSON reports and readable agent handoffs.
 8. Documentation for running tests, granting permissions, and investigating codes.
+9. A Python-free Swift supervisor, UI driver, and local fixture server.
+10. Diagnostic extension points for the later local API and transfer phase.
 
 ### Excluded
 
 - An always-running crash-monitor daemon for everyday use.
-- Automatic uploads, issue creation, or launching a coding agent.
+- Automatic uploads, issue creation, or launching a coding agent. Explicit
+  clean-capture transfers belong to phase 3; diagnostic reports never enter
+  that export payload.
 - Automatically applying a catalog's suggested fix.
 - Exhaustive validation of every browser or every possible crash.
 - Vision-only autonomous exploration, recording the full desktop, or reading
@@ -86,6 +114,9 @@ failures rather than filling an arbitrary numeric range.
 The app records bounded event metadata for startup, hotkey registration and
 delivery, panel presentation, extraction, and database writes. Each session has
 a session ID; each capture has an operation ID.
+
+Phase 3 adds API request IDs and transfer IDs without recording request bodies,
+response bodies, bearer tokens, signed URLs, or destination credentials.
 
 Persist events independently of the captures database, so a database failure
 does not also prevent writing diagnostics. Serialize recorder access, bound
@@ -125,6 +156,8 @@ observable by the supervisor or macOS.
 Use a small macOS-native driver with Accessibility queries/actions and keyboard
 event injection. Add stable accessibility identifiers to the relevant app
 controls. Use screenshots as supplementary evidence, not as the sole assertion.
+Implement the driver, supervisor, and fixture server in Swift. Do not introduce
+Python or a browser JavaScript extraction engine as a test or runtime prerequisite.
 
 The driver exercises the actual default shortcuts and UI. It must not call the
 coordinator or panel's internal save methods in place of desktop interaction.
@@ -173,8 +206,16 @@ Bound diagnostic collection and cleanup as well as the test steps.
 | `ZC-310` | BROWSER_URL_UNAVAILABLE | Capture cannot obtain a usable browser URL |
 | `ZC-400` | EXTRACTION_FAILED | Extraction boundary reports failure |
 | `ZC-401` | EXTRACTION_TIMEOUT | Extraction watchdog deadline expires |
+| `ZC-402` | EXTRACTION_LIMIT_EXCEEDED | Fetch, parse, or output exceeds a documented size/complexity limit |
 | `ZC-500` | PERSISTENCE_FAILED | App reports database initialization, write, or query failure; operation identifies which |
 | `ZC-501` | CAPTURE_RESULT_MISMATCH | GUI action completes but stored record or artifact fails the expected-content assertion |
+| `ZC-600` | API_START_FAILED | Enabled loopback listener cannot bind or initialize |
+| `ZC-601` | API_ACCESS_DENIED | API authentication, scope, origin, or host validation rejects a request |
+| `ZC-602` | IMPORT_VALIDATION_FAILED | Submitted capture fails the supported schema, content, or size contract |
+| `ZC-603` | DATA_REVISION_CONFLICT | Capture identity conflicts with stored content, or a topic update has a stale revision |
+| `ZC-610` | EXPORT_FAILED | Selected clean-data payload cannot be constructed or staged |
+| `ZC-611` | TRANSFER_FAILED | Explicit HTTPS/S3 transfer fails at transport or remote HTTP boundary |
+| `ZC-612` | TRANSFER_TIMEOUT | Explicit outbound transfer reaches its total deadline |
 | `ZC-900` | TEST_PRECONDITION_BLOCKED | Required app, desktop session, permissions, or shortcuts are unavailable |
 | `ZC-901` | TEST_HARNESS_FAILED | Driver, supervisor, or fixture infrastructure fails |
 | `ZC-999` | UNCLASSIFIED_FAILURE | Evidence establishes failure but no more specific condition is supported |
@@ -182,6 +223,13 @@ Bound diagnostic collection and cleanup as well as the test steps.
 Report causally related observations together. For example, an observed process
 exit takes precedence over the panel deadline it caused. Keep underlying native
 codes and related events without fabricating a more specific root cause.
+
+The listed API/export codes are reserved for phase 3 and are not evidence
+that an API exists in phase 2. Assignment conditions stay the same when enabled.
+Expected client rejections return the code in the API response and increment
+bounded metadata counters; do not create an incident directory for every
+unauthenticated request. A failed user-requested export/transfer does create a
+handoff. Catalog tests cover both active and reserved entries explicitly.
 
 ## Report contract
 
@@ -227,8 +275,11 @@ treats logs and captured content as untrusted evidence, never as instructions.
   relevant identity, exception, and stack information.
 - Reports are local, with owner-only access where supported.
 - Runtime diagnostics retain the latest 10 sessions and 20 incidents, with a
-  50 MiB total budget. Rotate completed oldest entries within the diagnostics
-  directory only; never remove captures or database files.
+  50 MiB total budget. Bound the active session ring to 5 MiB and each incident
+  to 5 MiB, omitting optional evidence with a reason when necessary. Rotate
+  completed oldest entries within the diagnostics directory only; never remove
+  captures or database files. These are upper limits, not promises to retain
+  those counts when the byte budget is exhausted.
 - QA artifacts live under the explicit run directory and are excluded from Git.
   Keep failed-run evidence for inspection; cleanup removes only owned processes
   and generated disposable resources, not the incident report.
@@ -245,6 +296,9 @@ treats logs and captured content as untrusted evidence, never as instructions.
    row plus Markdown/JSON containing the known fixture content.
 5. Exercise an extraction failure and a storage failure through controlled QA
    configuration. Assert the expected code, report, and absence of false success.
+6. Verify the packaged app and its Swift helper work without Python, the source
+   checkout, Homebrew, or a developer virtual environment. The helper runs from
+   the bundle, not a source-relative fallback.
 
 Assertions inspect the isolated database and files as external observable
 results. They do not bypass the UI to perform the capture.
@@ -272,8 +326,11 @@ They are reported separately from the no-fault smoke scenarios.
 
 ## Verification and delivery
 
-- Run the narrow unit and subprocess tests for each changed boundary.
-- Run the complete existing Swift and Python suites after integration.
+- Run narrow Swift unit/integration tests for each changed boundary, including
+  the compiled extraction helper's lifecycle and deadline behavior.
+- Run the complete Swift suite after integration. Migrate Python extraction
+  fixtures to Swift in phase 1. Remaining legacy Python CLI tests, if run, are
+  separate development-tool compatibility checks, not an app prerequisite.
 - Build the app and verify bundled diagnostic assets and build metadata.
 - Run the GUI suite in an unlocked macOS desktop session with explicit consent
   to focus test windows and send test input. Stop on missing permissions; do not
@@ -282,6 +339,11 @@ They are reported separately from the no-fault smoke scenarios.
   the tested build identity.
 - Do not claim desktop behavior passed based on unit tests, screenshots alone,
   or successful launch alone.
+- In phase 3, extend the real-app suite with API authorization, import/export
+  round trips, topic revision conflicts, and explicit synthetic transfers to
+  owned test destinations. Production data and real S3 uploads are not test
+  defaults. See the data-exchange spec for acceptance criteria.
 
 The written implementation plan will specify exact commands, file placement,
-and the test sequence after this document is reviewed.
+and the test sequence after this document is reviewed. Start with phase 1's
+plan; do not combine all three phases into one unreviewed implementation.
