@@ -1,0 +1,22 @@
+# SwiftPM
+.build/
+build/
+*.xcodeproj
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# macOS
+.DS_Store
+
+# Xcode
+.swiftpm/xcode/xcuserdata/
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+
+# Isolated implementation workspaces and local review evidence
+.worktrees/
+.superpowers/sdd/

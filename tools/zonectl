@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""zonectl — read-side companion for ZoneCapture.
+
+The write side is the ⌘⇧L panel (Swift app). The read side lives here. This
+is the seed of the retrieval/inference surface described in VISION.md: the
+inference stage reads what was captured (topics + trajectories), not raw
+links.
+
+Usage:
+  zonectl list [--limit N]            recent captures (default 25)
+  zonectl search <query>              search url/title/comment
+  zonectl export [--format md|json]   export all captures
+  zonectl db                          print the database path
+
+Database (fixed location, survives reinstalls):
+  ~/Library/Application Support/ZoneCapture/zonecapture.db
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import shlex
+import sqlite3
+import subprocess
+import sys
+
+DB_PATH = os.environ.get(
+    "ZONE_CAPTURE_DB",
+    os.path.expanduser("~/Library/Application Support/ZoneCapture/zonecapture.db"))
+
+COLUMNS = ["id", "url", "title", "comment", "source_app", "kind",
+           "capture_path", "topic", "created_at"]
+
+
+def connect():
+    if not os.path.exists(DB_PATH):
+        sys.exit(f"error: database not found at {DB_PATH}")
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def available_columns(con):
+    have = {r[1] for r in con.execute("PRAGMA table_info(links)")}
+    return [c for c in COLUMNS if c in have]
+
+
+def fetch(con, where=(), params=(), order="created_at DESC", limit=None):
+    cols = available_columns(con)
+    sql = f"SELECT {', '.join(cols)} FROM links"
+    if where:
+        sql += f" WHERE {' AND '.join(where)}"
+    sql += f" ORDER BY {order}"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+    return con.execute(sql, params).fetchall(), cols
+
+
+def fmt_when(ts):
+    try:
+        return dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return "?"
+
+
+def print_rows(rows, cols):
+    for r in rows:
+        topic = f" [{r['topic']}]" if "topic" in cols and r["topic"] else ""
+        title = f" — {r['title']}" if r["title"] else ""
+        comment = f"  “{r['comment']}”" if r["comment"] else ""
+        cp = r["capture_path"] if "capture_path" in cols else None
+        capture = f" [md: {cp}]" if cp else ""
+        print(f"{r['id']:>4}  {fmt_when(r['created_at'])}  {r['url']}{title}"
+              f"{topic}{comment}{capture}  ({r['source_app'] or '?'}, {r['kind']})")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="zonectl", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sp = sub.add_parser("list", help="recent captures")
+    sp.add_argument("--limit", type=int, default=25)
+
+    sp = sub.add_parser("search", help="search url/title/comment")
+    sp.add_argument("query")
+    sp.add_argument("--limit", type=int, default=50)
+
+    sp = sub.add_parser("export", help="export all captures")
+    sp.add_argument("--format", choices=["md", "json"], default="md")
+
+    sp = sub.add_parser("open", help="open the capture markdown or URL")
+    sp.add_argument("id", type=int)
+
+    sub.add_parser("db", help="print the database path")
+
+    args = p.parse_args()
+    con = connect()
+
+    if args.cmd == "db":
+        print(DB_PATH)
+        return
+
+    if args.cmd == "open":
+        row = con.execute(
+            "SELECT url, capture_path FROM links WHERE id = ?;", (args.id,)
+        ).fetchone()
+        if not row:
+            sys.exit(f"error: no capture with id {args.id}")
+        target = row["capture_path"] or row["url"]
+        if not target:
+            sys.exit(f"error: capture {args.id} has neither URL nor markdown file")
+        # shlex.split so ZONECTL_OPEN may carry arguments ("open -a Marked");
+        # the override is still argv-only, never shell-evaluated.
+        opener = shlex.split(os.environ.get("ZONECTL_OPEN", "open"))
+        try:
+            result = subprocess.run(opener + [target])
+        except FileNotFoundError:
+            sys.exit(f"error: opener not found: {opener[0]}")
+        if result.returncode != 0:
+            sys.exit(f"error: failed to open {target}")
+        return
+
+    if args.cmd == "list":
+        rows, cols = fetch(con, limit=args.limit)
+        print_rows(rows, cols)
+        return
+
+    if args.cmd == "search":
+        q = f"%{args.query}%"
+        rows, cols = fetch(
+            con,
+            where=["(url LIKE ? OR IFNULL(title,'') LIKE ? "
+                   "OR IFNULL(comment,'') LIKE ?)"],
+            params=(q, q, q), limit=args.limit)
+        if not rows:
+            print("no matches")
+        print_rows(rows, cols)
+        return
+
+    if args.cmd == "export":
+        rows, cols = fetch(con)
+        if args.format == "json":
+            out = [{k: r[k] for k in cols} for r in rows]
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            print("# ZoneCapture export")
+            print()
+            current_day = None
+            for r in rows:
+                day = fmt_when(r["created_at"])[:10]
+                if day != current_day:
+                    current_day = day
+                    print(f"## {day}")
+                    print()
+                title = f" — {r['title']}" if r["title"] else ""
+                comment = f"\n   > {r['comment']}" if r["comment"] else ""
+                print(f"- [{r['url']}]({r['url']}){title}{comment}")
+                print()
+
+
+if __name__ == "__main__":
+    main()

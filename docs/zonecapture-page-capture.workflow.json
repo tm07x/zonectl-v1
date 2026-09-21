@@ -1,0 +1,97 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "ZoneCapture Page-Capture Workflow",
+    "quality_profile": "showcase",
+    "output": "docs/zonecapture-page-capture.html",
+    "legend": {
+      "entries": {
+        "frontend": { "label": "User-facing UI" },
+        "backend": { "label": "App code" },
+        "database": { "label": "Local SQLite" },
+        "external": { "label": "Outside the app" }
+      }
+    },
+    "views": [
+      {
+        "id": "happy-path",
+        "label": "Hotkey to review",
+        "focus": ["user", "hotkey", "app", "urlfetch", "coordinator", "extractor", "captures", "store", "zonectl"],
+        "note": "Follow one page from hotkey press to a reviewable capture."
+      },
+      {
+        "id": "artifacts",
+        "label": "Files and records",
+        "focus": ["extractor", "captures", "store", "zonectl"],
+        "note": "See what lands on disk and how it is indexed."
+      },
+      {
+        "id": "feedback",
+        "label": "No typing, one banner",
+        "focus": ["hotkey", "app", "coordinator", "banner"],
+        "note": "Page capture runs unattended; a banner is the only interruption."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "ui", "label": "User Interaction" },
+    { "id": "app", "label": "App Runtime" },
+    { "id": "pipeline", "label": "Extraction + Storage" }
+  ],
+  "phases": [
+    { "id": "trigger", "label": "Trigger", "fromCol": 0, "toCol": 1 },
+    { "id": "capture", "label": "Read + extract", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "persist", "label": "Persist + review", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["user", "hotkey", "app", "urlfetch", "coordinator", "extractor", "captures", "store", "zonectl"],
+  "nodes": [
+    { "id": "user", "lane": "ui", "col": 0, "type": "external", "label": "User", "sublabel": "deep in work", "width": 122 },
+    { "id": "hotkey", "lane": "ui", "col": 1, "type": "frontend", "label": "Global Hotkey", "sublabel": "⌘⇧⌥L", "width": 122 },
+    { "id": "banner", "lane": "ui", "col": 4, "type": "frontend", "label": "Banner", "sublabel": "saved / failed", "width": 122 },
+    { "id": "zonectl", "lane": "ui", "col": 5, "type": "frontend", "label": "zonectl", "sublabel": "list / open", "tag": "CLI", "width": 122 },
+    { "id": "app", "lane": "app", "col": 1, "type": "backend", "label": "AppDelegate", "sublabel": "frontmost app check", "width": 122 },
+    { "id": "urlfetch", "lane": "app", "col": 2, "type": "backend", "label": "URLFetcher", "sublabel": "URL + title", "width": 122 },
+    { "id": "coordinator", "lane": "app", "col": 3, "type": "backend", "label": "CaptureCoordinator", "sublabel": "no comment typed", "width": 140 },
+    { "id": "extractor", "lane": "pipeline", "col": 3, "type": "backend", "label": "PageExtractor", "sublabel": "zone_extract.py", "tag": "subprocess", "width": 122 },
+    { "id": "captures", "lane": "pipeline", "col": 4, "type": "external", "label": "captures/", "sublabel": "*.md + *.json", "width": 122 },
+    { "id": "store", "lane": "pipeline", "col": 5, "type": "database", "label": "SQLite Store", "sublabel": "kind='capture'", "width": 122 }
+  ],
+  "edges": [
+    { "id": "user-hotkey", "from": "user", "to": "hotkey" },
+    { "id": "hotkey-app", "from": "hotkey", "to": "app" },
+    { "id": "app-urlfetch", "from": "app", "to": "urlfetch", "label": "frontmost browser" },
+    { "id": "urlfetch-coordinator", "from": "urlfetch", "to": "coordinator", "label": "URL + title" },
+    { "id": "coordinator-extractor", "from": "coordinator", "to": "extractor", "label": "extract page" },
+    { "id": "extractor-captures", "from": "extractor", "to": "captures", "label": "write .md + .json" },
+    { "id": "captures-store", "from": "captures", "to": "store", "label": "row + capture_path" },
+    { "id": "store-zonectl", "from": "store", "to": "zonectl", "label": "list / open" },
+    { "id": "coordinator-banner", "from": "coordinator", "to": "banner", "label": "saved or failed", "variant": "dashed", "role": "branch" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Zone-safe by design",
+      "items": [
+        "⌘⇧⌥L captures the page without typing",
+        "A banner is the only interruption"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Durable artifacts",
+      "items": [
+        "Markdown + JSON written to captures/",
+        "SQLite row with kind='capture' and capture_path"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Review later",
+      "items": [
+        "zonectl list marks captures with [md: path]",
+        "zonectl open <id> reopens the Markdown"
+      ]
+    }
+  ]
+}
