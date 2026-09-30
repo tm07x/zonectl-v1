@@ -108,6 +108,7 @@ public final class Store {
         // the topic a capture belongs to. Discovered later, never lost.
         // Migrated onto existing databases as well.
         addColumnIfMissing("topic", type: "TEXT")
+        addColumnIfMissing("capture_path", type: "TEXT")
     }
 
     private func addColumnIfMissing(_ column: String, type: String) {
