@@ -21,9 +21,11 @@ MAX_BYTES = 10 * 1024 * 1024
 
 
 def fetch(url: str, timeout: int = 20) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or parsed.username or parsed.password:
+        raise ValueError("only HTTP(S) URLs without credentials are supported")
     req = urllib.request.Request(
         url, headers={"User-Agent": "ZoneCapture/0.1 (+macOS)"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read(MAX_BYTES + 1)[:MAX_BYTES].decode("utf-8", errors="replace")
 
 
