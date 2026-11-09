@@ -39,10 +39,9 @@ final class CapturePanel {
 
     // MARK: - Public
 
-    func show() {
+    func show(front: URLFetcher.FrontApp? = URLFetcher.detectFrontmost()) {
         // Identify the frontmost app synchronously, *before* this panel
         // steals focus. The URL fetch itself runs in the background.
-        let front = URLFetcher.detectFrontmost()
         let request = session.begin(sourceApp: front?.name ?? "")
 
         urlField.stringValue = ""

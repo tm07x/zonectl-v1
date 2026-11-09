@@ -12,10 +12,7 @@ app.activate(ignoringOtherApps: true)
 let capture = CapturePanel()
 
 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier else {
-        fatalError("Refusing to fetch from an unrelated frontmost application")
-    }
-    capture.show()
+    capture.show(front: nil)
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
         do {
             guard let window = app.windows.first(where: { $0.title == "ZoneCapture" }),
@@ -41,7 +38,7 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             precondition(rows.count == 1 && rows[0].url == url.stringValue)
             precondition(rows[0].title == nil && rows[0].comment == note.stringValue)
             precondition(!window.isVisible)
-            capture.show()
+            capture.show(front: nil)
             precondition(url.stringValue.isEmpty && note.stringValue.isEmpty)
             precondition(app.sendAction(NSSelectorFromString("cancel"), to: capture, from: nil))
             precondition(!window.isVisible)
