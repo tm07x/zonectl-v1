@@ -30,21 +30,7 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 fatalError("Could not render the capture panel")
             }
             content.cacheDisplay(in: content.bounds, to: bitmap)
-            guard let rendered = NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh,
-                bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-                  let context = NSGraphicsContext(bitmapImageRep: rendered) else {
-                fatalError("Could not create an opaque render")
-            }
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current = context
-            let bounds = NSRect(x: 0, y: 0, width: CGFloat(bitmap.pixelsWide), height: CGFloat(bitmap.pixelsHigh))
-            NSColor.white.setFill()
-            bounds.fill()
-            bitmap.draw(in: bounds)
-            NSGraphicsContext.restoreGraphicsState()
-            guard let png = rendered.representation(using: .png, properties: [:]) else {
+            guard let png = bitmap.representation(using: .png, properties: [:]) else {
                 fatalError("Could not encode the rendered panel")
             }
             try png.write(to: URL(fileURLWithPath: screenshot))
