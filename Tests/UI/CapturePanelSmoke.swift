@@ -29,7 +29,13 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 fatalError("Could not render the capture panel")
             }
             content.cacheDisplay(in: content.bounds, to: bitmap)
-            guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            let rendered = NSImage(size: content.bounds.size, flipped: false) { bounds in
+                NSColor.windowBackgroundColor.setFill()
+                bounds.fill()
+                return bitmap.draw(in: bounds)
+            }
+            guard let tiff = rendered.tiffRepresentation,
+                  let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
                 fatalError("Could not encode the rendered panel")
             }
             try png.write(to: URL(fileURLWithPath: screenshot))
