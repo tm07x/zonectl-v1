@@ -26,8 +26,11 @@ cd VM-APPS/zonecapture
 ./make-app.sh build    # build only, launches from ./build/ZoneCapture.app
 ```
 
-Requires the Xcode Command Line Tools (Swift 5.9+). No external dependencies —
-SQLite is linked against the system `libsqlite3`.
+Requires a macOS Swift 5.9+ toolchain. The Swift core links the system
+`libsqlite3` without third-party Swift packages. Page extraction also requires
+Python 3, `readability-lxml`, and `markdownify`; `make-app.sh` downloads these
+dependencies into a bundled virtualenv at build time, so packaging needs network
+access. The installed app uses that bundled Python environment at runtime.
 
 On launch the app registers itself as a **login item** (`SMAppService`), so
 the ⌘⇧L hotkey keeps working after a reboot. Manage it under
@@ -54,8 +57,8 @@ System Settings → General → Login Items & Extensions.
 Menu-bar menu:
 - **Capture frontmost URL** — same as ⌘⇧L.
 - **Capture page content** — same as ⌘⇧⌥L.
-- **Recent captures…** — shows the last 12 rows (URL/tab title/note,
-  timestamp, kind, capture path).
+- **Recent captures…** — shows the last 12 rows (URL/tab title/note and
+  timestamp). Use `zonectl list` to see the kind and capture path.
 - **Reveal database in Finder** — opens the folder holding `zonecapture.db`.
 
 ## Where data lives
@@ -66,6 +69,14 @@ Menu-bar menu:
 | Parsed captures  | `~/Library/Application Support/ZoneCapture/captures/`      |
 
 Fixed storage, survives app reinstalls. The `links` table:
+
+For disposable development or CI data, set `ZONE_CAPTURE_ROOT` before starting
+the app or initializing `Store.shared`; it overrides the entire storage root.
+The CLI accepts `ZONE_CAPTURE_DB` for the database file. `zonectl db` prints
+its configured path even before the database exists, without creating it.
+Page captures use an operation-owned subdirectory of `captures/`; a known
+extraction or insert failure removes only that operation's directory. This
+doesn't provide crash recovery for a process killed before its insert.
 
 ```sql
 CREATE TABLE links (
@@ -128,8 +139,8 @@ Sources/ZoneCapture/
   AppDelegate.swift      menu-bar item + both hotkeys + recent/reveal actions
   HotkeyManager.swift    Carbon RegisterEventHotKey global shortcut
   CapturePanel.swift     floating NSPanel: URL field, note field, Save/Cancel
-  URLFetcher.swift       per-browser AppleScript / Accessibility URL fetch
 Sources/ZoneCaptureCore/
+  URLFetcher.swift       per-browser AppleScript / Accessibility URL fetch
   Store.swift            SQLite wrapper; fixed-location DB + captures dir
   Secrets.swift          Keychain-backed SecretStore (AI-key groundwork)
   PageExtractor.swift    ExtractionRunner protocol + Python script runner
@@ -161,16 +172,18 @@ See `docs/zonecapture-architecture.html` for an interactive diagram.
 
 ## Tests
 
-Swift: 59 XCTest tests covering Store, URLFetcher, Secrets, PageExtractor
-(including real-subprocess runs against stub scripts: success, error payload,
-stderr fallback, pipe-flood deadlock regression, runaway-process watchdog,
-custom interpreter), CaptureCoordinator, and HotkeyRegistry. Python: 11
-pytest tests covering `zone_extract.py` and `zonectl`. Authored via the
-project's subagent-driven TDD rules.
+XCTest covers Store, capture-session isolation, browser selection and error
+messages, Secrets, subprocess output draining and timeouts, capture ownership,
+and hotkey registration. Python tests cover extraction boundaries, HTTP(S)
+validation and redirects, timeout propagation, and the read-side CLI. All
+database fixtures are disposable; the singleton test redirects its root before
+first access and never opens the user's Application Support database.
 
 ```bash
 swift test
-/tmp/zc-test-venv/bin/python -m pytest tools/tests/
+python3 -m venv .venv
+.venv/bin/python -m pip install -r tools/requirements.txt pytest
+.venv/bin/python -m pytest tools/tests/
 ```
 
 `swift test` needs a full Xcode toolchain (Command Line Tools ships no
@@ -179,6 +192,11 @@ XCTest). If `xcode-select -p` points at Command Line Tools, run:
 ```bash
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
+
+GitHub Actions runs `swift build` and `swift test` on a hosted macOS runner,
+plus the portable Python suite on Linux. No signing credentials are needed.
+These tests don't exercise real browser Automation/Accessibility permissions,
+physical hotkey delivery, login-item approval, or packaging/signing.
 
 ## Packaging notes
 

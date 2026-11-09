@@ -1,0 +1,57 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/requirements.txt pytest
+      - run: python -m pytest tools/tests
+        env:
+          ZONE_CAPTURE_DB: ${{ runner.temp }}/zonecapture-cli/zonecapture.db
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: swift build
+      - run: swift test
+        env:
+          ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-tests
+      - name: Render and exercise the capture panel
+        env:
+          ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-ui-smoke
+          ZONE_CAPTURE_SCREENSHOT: ${{ runner.temp }}/capture-panel.png
+        run: |
+          binary_path="$(swift build --show-bin-path)"
+          mkdir -p "$RUNNER_TEMP/zonecapture-ui-harness"
+          cp Tests/UI/CapturePanelSmoke.swift "$RUNNER_TEMP/zonecapture-ui-harness/main.swift"
+          swiftc -I "$binary_path/Modules" "$binary_path/ZoneCaptureCore.build/"*.o \
+            Sources/ZoneCapture/CapturePanel.swift "$RUNNER_TEMP/zonecapture-ui-harness/main.swift" \
+            -lsqlite3 -o "$RUNNER_TEMP/zonecapture-ui-harness/CapturePanelSmoke"
+          "$RUNNER_TEMP/zonecapture-ui-harness/CapturePanelSmoke"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capture-panel
+          path: ${{ runner.temp }}/capture-panel.png
+          if-no-files-found: error

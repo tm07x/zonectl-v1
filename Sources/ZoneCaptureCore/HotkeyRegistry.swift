@@ -30,6 +30,28 @@ public final class HotkeyRegistry {
         return id
     }
 
+    @discardableResult
+    public func register(
+        _ action: @escaping Action,
+        installHandler: () -> Int32,
+        reserve: (UInt32) -> Int32,
+        onFailure: ((Int32) -> Void)? = nil
+    ) -> UInt32? {
+        let handlerStatus = installHandler()
+        guard handlerStatus == 0 else {
+            onFailure?(handlerStatus)
+            return nil
+        }
+        let id = register(action)
+        let status = reserve(id)
+        guard status == 0 else {
+            unregister(id: id)
+            onFailure?(status)
+            return nil
+        }
+        return id
+    }
+
     public func unregister(id: UInt32) {
         actions.removeValue(forKey: id)
     }

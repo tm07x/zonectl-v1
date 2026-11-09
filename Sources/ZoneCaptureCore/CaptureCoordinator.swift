@@ -33,9 +33,18 @@ public final class CaptureCoordinator {
     /// the store reports failure (`insertLink` signals it with -1).
     @discardableResult
     public func capturePage(url: String, sourceApp: String?, comment: String?) throws -> Int64 {
+        let directory = URL(fileURLWithPath: store.capturesDirectory)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        var persisted = false
+        defer {
+            if !persisted {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         let result = try extractor.extract(
             url: url,
-            outDir: store.capturesDirectory)
+            outDir: directory.path)
         let id = store.insertLink(
             url: url,
             title: result.title,
@@ -44,6 +53,7 @@ public final class CaptureCoordinator {
             kind: "capture",
             capturePath: result.capturePath)
         guard id >= 0 else { throw CaptureError.storeInsertFailed }
+        persisted = true
         return id
     }
 }
