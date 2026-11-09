@@ -139,8 +139,8 @@ Sources/ZoneCapture/
   AppDelegate.swift      menu-bar item + both hotkeys + recent/reveal actions
   HotkeyManager.swift    Carbon RegisterEventHotKey global shortcut
   CapturePanel.swift     floating NSPanel: URL field, note field, Save/Cancel
-  URLFetcher.swift       per-browser AppleScript / Accessibility URL fetch
 Sources/ZoneCaptureCore/
+  URLFetcher.swift       per-browser AppleScript / Accessibility URL fetch
   Store.swift            SQLite wrapper; fixed-location DB + captures dir
   Secrets.swift          Keychain-backed SecretStore (AI-key groundwork)
   PageExtractor.swift    ExtractionRunner protocol + Python script runner
