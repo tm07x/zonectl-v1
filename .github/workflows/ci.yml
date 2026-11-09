@@ -27,8 +27,6 @@ jobs:
 
   macos:
     runs-on: macos-15
-    env:
-      ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-tests
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -36,3 +34,5 @@ jobs:
           python-version: '3.12'
       - run: swift build
       - run: swift test
+        env:
+          ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-tests
