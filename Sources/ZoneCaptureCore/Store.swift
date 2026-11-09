@@ -57,6 +57,10 @@ public final class Store {
 
     /// Production initializer — uses the standard Application Support directory.
     private convenience init() {
+        if let root = ProcessInfo.processInfo.environment["ZONE_CAPTURE_ROOT"], !root.isEmpty {
+            self.init(rootDirectory: root)
+            return
+        }
         let appSupport = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?.path ?? NSTemporaryDirectory()

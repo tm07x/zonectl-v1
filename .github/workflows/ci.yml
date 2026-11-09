@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, capy/zonectl-audit-remediation]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r tools/requirements.txt pytest
+      - run: python -m pytest tools/tests
+        env:
+          ZONE_CAPTURE_DB: ${{ runner.temp }}/zonecapture-cli/zonecapture.db
+
+  macos:
+    runs-on: macos-15
+    env:
+      ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: swift build
+      - run: swift test

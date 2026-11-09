@@ -234,12 +234,19 @@ final class StoreTests: XCTestCase {
     // MARK: - Shared singleton
 
     func testSharedSingletonExists() {
-        // Verify the production singleton is still accessible and functional.
-        // We don't insert into it to avoid polluting the user's real DB, but
-        // calling recent() (read-only) is harmless.
-        _ = Store.shared.databasePath
-        _ = Store.shared.recent(limit: 0)
-        // recent(limit: 0) should return an empty array, not crash.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zonecapture-singleton-\(UUID().uuidString)")
+        let previousRoot = getenv("ZONE_CAPTURE_ROOT").map { String(cString: $0) }
+        setenv("ZONE_CAPTURE_ROOT", root.path, 1)
+        defer {
+            if let previousRoot {
+                setenv("ZONE_CAPTURE_ROOT", previousRoot, 1)
+            } else {
+                unsetenv("ZONE_CAPTURE_ROOT")
+            }
+        }
+        XCTAssertEqual(Store.shared.databasePath, root.appendingPathComponent("zonecapture.db").path)
+        XCTAssertTrue(Store.shared.recent(limit: 0).isEmpty)
     }
 
     // MARK: - recentAll / CaptureRow
