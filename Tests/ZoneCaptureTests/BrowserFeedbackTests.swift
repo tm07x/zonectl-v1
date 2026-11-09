@@ -30,4 +30,15 @@ final class BrowserFeedbackTests: XCTestCase {
         XCTAssertNotNil(URLFetcher.scriptForApp(name: "Safari", bundleId: ""))
         XCTAssertTrue(URLFetcher.isFirefox(name: "Firefox", bundleId: ""))
     }
+
+    func testFirefoxDeveloperEditionUsesItsExactBundleID() {
+        XCTAssertTrue(URLFetcher.isFirefox(
+            name: "Firefox Developer Edition", bundleId: "org.mozilla.firefoxdeveloperedition"))
+        XCTAssertTrue(URLFetcher.isFirefox(
+            name: "Localized browser name", bundleId: "ORG.MOZILLA.FIREFOXDEVELOPEREDITION"))
+        XCTAssertFalse(URLFetcher.isFirefox(
+            name: "Firefox Developer Edition", bundleId: "example.not-firefox"))
+        XCTAssertNil(URLFetcher.scriptForApp(
+            name: "Firefox Developer Edition", bundleId: "org.mozilla.firefoxdeveloperedition"))
+    }
 }

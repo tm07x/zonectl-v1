@@ -125,7 +125,10 @@ public enum URLFetcher {
                 target: "Arc"),
     ]
 
-    private static let firefoxBundles = ["org.mozilla.firefox", "org.mozilla.firefoxbeta", "org.mozilla.nightly"]
+    private static let firefoxBundles = [
+        "org.mozilla.firefox", "org.mozilla.firefoxbeta", "org.mozilla.nightly",
+        "org.mozilla.firefoxdeveloperedition",
+    ]
     private static let firefoxNames = ["firefox", "firefox developer edition", "firefox nightly"]
 
     // MARK: - Script selection
