@@ -97,21 +97,11 @@ public final class PythonExtractionRunner: ExtractionRunner {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        // Drain both pipes concurrently; the handlers fire on private queues.
-        let lock = NSLock()
-        var outData = Data()
-        var errData = Data()
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            lock.lock()
-            outData.append(chunk)
-            lock.unlock()
-        }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            lock.lock()
-            errData.append(chunk)
-            lock.unlock()
+        defer {
+            try? stdout.fileHandleForReading.close()
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForReading.close()
+            try? stderr.fileHandleForWriting.close()
         }
 
         let done = DispatchSemaphore(value: 0)
@@ -120,29 +110,27 @@ public final class PythonExtractionRunner: ExtractionRunner {
         do {
             try process.run()
         } catch {
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
             throw ExtractionError.executionFailed(error.localizedDescription)
         }
+        try? stdout.fileHandleForWriting.close()
+        try? stderr.fileHandleForWriting.close()
+        let stdoutDrain = PipeDrain(stdout.fileHandleForReading)
+        let stderrDrain = PipeDrain(stderr.fileHandleForReading)
+        let deadline = DispatchTime.now() + timeout + watchdogGrace
 
-        if done.wait(timeout: .now() + timeout + watchdogGrace) == .timedOut {
+        if done.wait(timeout: deadline) == .timedOut {
             process.terminate()
             if done.wait(timeout: .now() + 2) == .timedOut, process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
                 _ = done.wait(timeout: .now() + 2)
             }
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
+            _ = try? stdoutDrain.finish(by: .now() + 2)
+            _ = try? stderrDrain.finish(by: .now() + 2)
             throw ExtractionError.executionFailed("timed out after \(Int(timeout))s")
         }
 
-        // The child has exited; read whatever is left through EOF.
-        stdout.fileHandleForReading.readabilityHandler = nil
-        stderr.fileHandleForReading.readabilityHandler = nil
-        lock.lock()
-        outData.append(stdout.fileHandleForReading.readDataToEndOfFile())
-        errData.append(stderr.fileHandleForReading.readDataToEndOfFile())
-        lock.unlock()
+        let outData = try stdoutDrain.finish(by: deadline)
+        let errData = try stderrDrain.finish(by: deadline)
 
         guard process.terminationStatus == 0 else {
             // The script reports failures as {"error": "..."} on STDOUT with
@@ -160,6 +148,30 @@ public final class PythonExtractionRunner: ExtractionRunner {
 
         // On success the script prints the extraction result JSON.
         return try PageExtractor.parseOutput(outData)
+    }
+}
+
+private final class PipeDrain: @unchecked Sendable {
+    private let done = DispatchGroup()
+    private var result: Swift.Result<Data, Error>?
+
+    init(_ handle: FileHandle) {
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.result = Swift.Result { try handle.readToEnd() ?? Data() }
+            self.done.leave()
+        }
+    }
+
+    func finish(by deadline: DispatchTime) throws -> Data {
+        guard done.wait(timeout: deadline) == .success else {
+            throw ExtractionError.executionFailed("timed out draining extractor output")
+        }
+        do {
+            return try result!.get()
+        } catch {
+            throw ExtractionError.executionFailed("couldn't read extractor output: \(error.localizedDescription)")
+        }
     }
 }
 

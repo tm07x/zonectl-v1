@@ -34,25 +34,18 @@ final class HotkeyManager {
         action: @escaping () -> Void,
         onFailure: ((OSStatus) -> Void)? = nil
     ) {
-        installHandlerIfNeeded()
-
-        let id = registry.register(action)
-        let hotKeyID = EventHotKeyID(signature: signature, id: id)
-        var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(
-            keyCode,
-            modifiers,
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &ref)
-        guard status == noErr, let ref else {
-            NSLog("[ZoneCapture] RegisterEventHotKey failed (\(status)) — combo likely owned by another app")
-            registry.unregister(id: id)
-            onFailure?(status)
-            return
-        }
-        hotKeyRefs[id] = ref
+        registry.register(action, installHandler: installHandlerIfNeeded, reserve: { id in
+            let hotKeyID = EventHotKeyID(signature: signature, id: id)
+            var ref: EventHotKeyRef?
+            let status = RegisterEventHotKey(
+                keyCode, modifiers, hotKeyID, GetApplicationEventTarget(), 0, &ref)
+            guard status == noErr, let ref else {
+                NSLog("[ZoneCapture] RegisterEventHotKey failed (\(status)) — combo likely owned by another app")
+                return status == noErr ? OSStatus(paramErr) : status
+            }
+            hotKeyRefs[id] = ref
+            return noErr
+        }, onFailure: onFailure)
     }
 
     func unregisterAll() {
@@ -63,8 +56,8 @@ final class HotkeyManager {
         hotKeyRefs.removeAll()
     }
 
-    private func installHandlerIfNeeded() {
-        guard eventHandler == nil else { return }
+    private func installHandlerIfNeeded() -> OSStatus {
+        guard eventHandler == nil else { return noErr }
 
         var spec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -106,7 +99,9 @@ final class HotkeyManager {
             &eventHandler)
         if status != noErr {
             NSLog("[ZoneCapture] InstallEventHandler failed: \(status)")
+            return status
         }
+        return eventHandler == nil ? OSStatus(eventNotHandledErr) : noErr
     }
 
     deinit {

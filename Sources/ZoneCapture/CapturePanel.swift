@@ -23,8 +23,7 @@ final class CapturePanel {
     private var urlField: NSTextField!
     private var commentField: NSTextField!
     private var statusLabel: NSTextField!
-    private var sourceApp: String = ""
-    private var sourceTitle: String?
+    private var session = CaptureSession()
 
     // One reusable confirmation/error banner (previously a new NSWindow was
     // allocated on every save).
@@ -44,8 +43,7 @@ final class CapturePanel {
         // Identify the frontmost app synchronously, *before* this panel
         // steals focus. The URL fetch itself runs in the background.
         let front = URLFetcher.detectFrontmost()
-        sourceApp = front?.name ?? ""
-        sourceTitle = nil
+        let request = session.begin(sourceApp: front?.name ?? "")
 
         urlField.stringValue = ""
         commentField.stringValue = ""
@@ -60,33 +58,19 @@ final class CapturePanel {
         guard let front else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let captured = URLFetcher.capture(app: front)
-            DispatchQueue.main.async { self.apply(captured) }
+            DispatchQueue.main.async { self.apply(captured, request: request) }
         }
     }
 
-    private func apply(_ captured: URLFetcher.Result) {
+    private func apply(_ captured: URLFetcher.Result, request: UUID) {
+        guard session.apply(captured, request: request) else { return }
         // Don't clobber text the user has already typed while the browser
         // script was still in flight.
         if urlField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
             urlField.stringValue = captured.url
         }
-        sourceTitle = (captured.title?.isEmpty == false) ? captured.title : nil
-
-        switch captured.error {
-        case .automationDenied:
-            statusLabel.stringValue =
-                "Permission needed: allow ZoneCapture to control \(captured.appName) " +
-                "under System Settings → Privacy & Security → Automation."
-        case .browserNotRunningOrNoTabs:
-            statusLabel.stringValue =
-                "Couldn't read a tab from \(captured.appName) — paste the URL."
-        case nil:
-            if captured.url.isEmpty {
-                statusLabel.stringValue = "No URL from \(captured.appName) — paste one or type a note."
-            } else {
-                statusLabel.stringValue = "From \(captured.appName) · press ↵ to save"
-            }
-        }
+        statusLabel.stringValue = captured.failureMessage
+            ?? "From \(captured.appName) · press ↵ to save"
 
         if captured.url.isEmpty {
             panel.makeFirstResponder(urlField)
@@ -222,6 +206,7 @@ final class CapturePanel {
     // MARK: - Actions
 
     @objc private func cancel() {
+        session.end()
         panel.orderOut(nil)
     }
 
@@ -232,6 +217,7 @@ final class CapturePanel {
         // Nothing to record: an empty URL plus an empty note would only add a
         // junk row (e.g. accidental hotkey + Return). Dismiss silently.
         guard !url.isEmpty || !comment.isEmpty else {
+            session.end()
             panel.orderOut(nil)
             return
         }
@@ -239,13 +225,13 @@ final class CapturePanel {
         // Allow a note-only capture when no browser URL was grabbed (feature 3
         // groundwork): record the frontmost app name so the row is still useful.
         let kind = url.isEmpty ? "note" : "url"
-        let recordedURL = url.isEmpty ? "(no url — note from \(sourceApp))" : url
+        let recordedURL = url.isEmpty ? "(no url — note from \(session.sourceApp))" : url
 
         let id = Store.shared.insertLink(
             url: recordedURL,
-            title: url.isEmpty ? nil : sourceTitle,
+            title: session.title(for: url),
             comment: comment.isEmpty ? nil : comment,
-            sourceApp: sourceApp,
+            sourceApp: session.sourceApp,
             kind: kind)
 
         if id < 0 {
@@ -258,6 +244,7 @@ final class CapturePanel {
         }
 
         flashBanner("✓ Captured")
+        session.end()
         panel.orderOut(nil)
     }
 

@@ -161,3 +161,49 @@ def test_open_reports_opener_failure():
     )
     assert result.returncode != 0, "a failed opener must not exit 0"
     assert "error" in result.stderr.lower()
+
+
+@pytest.mark.parametrize("existing_parent", [False, True])
+def test_db_prints_missing_override_path_without_creating_database(tmp_path, existing_parent):
+    db = tmp_path / "data" / "zonecapture.db"
+    if existing_parent:
+        db.parent.mkdir()
+
+    result = _run(["db"], str(db))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{db}\n"
+    assert result.stderr == ""
+    assert not db.exists()
+    assert db.parent.exists() == existing_parent
+
+
+@pytest.mark.parametrize("existing_parent", [False, True])
+def test_db_discovers_fresh_home_path_without_creating_database(tmp_path, existing_parent):
+    db = tmp_path / "Library" / "Application Support" / "ZoneCapture" / "zonecapture.db"
+    if existing_parent:
+        db.parent.mkdir(parents=True)
+    env = os.environ.copy()
+    env.pop("ZONE_CAPTURE_DB", None)
+    env["HOME"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "db"], capture_output=True, text=True, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{db}\n"
+    assert result.stderr == ""
+    assert not db.exists()
+    assert db.parent.exists() == existing_parent
+
+
+@pytest.mark.parametrize("args", [["list"], ["search", "query"], ["export"], ["open", "1"]])
+def test_read_commands_report_missing_database_without_creating_it(tmp_path, args):
+    db = tmp_path / "zonecapture.db"
+
+    result = _run(args, str(db))
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert f"database not found at {db}" in result.stderr
+    assert not db.exists()

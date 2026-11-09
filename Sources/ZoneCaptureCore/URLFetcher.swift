@@ -34,6 +34,18 @@ public enum URLFetcher {
             self.appName = appName
             self.error = error
         }
+
+        public var failureMessage: String? {
+            switch error {
+            case .automationDenied:
+                return "Permission needed: allow ZoneCapture to control \(appName) " +
+                    "under System Settings → Privacy & Security → Automation."
+            case .browserNotRunningOrNoTabs:
+                return "Couldn't read a tab from \(appName) — paste the URL."
+            case nil:
+                return url.isEmpty ? "No URL from \(appName) — paste one or type a note." : nil
+            }
+        }
     }
 
     /// Identity of the frontmost application, captured synchronously so the
@@ -99,9 +111,15 @@ public enum URLFetcher {
         Browser(bundleIds: ["com.microsoft.edgemac"],
                 names: ["microsoft edge"],
                 target: "Microsoft Edge"),
-        Browser(bundleIds: ["com.brave.browser", "com.brave.browser.beta", "com.brave.browser.nightly"],
+        Browser(bundleIds: ["com.brave.browser"],
                 names: ["brave browser", "brave"],
                 target: "Brave Browser"),
+        Browser(bundleIds: ["com.brave.browser.beta"],
+                names: ["brave browser beta"],
+                target: "Brave Browser Beta"),
+        Browser(bundleIds: ["com.brave.browser.nightly"],
+                names: ["brave browser nightly"],
+                target: "Brave Browser Nightly"),
         Browser(bundleIds: ["company.thebrowser.browser"],
                 names: ["arc"],
                 target: "Arc"),
@@ -124,14 +142,16 @@ public enum URLFetcher {
     private static func browser(name: String, bundleId: String) -> Browser? {
         let bid = bundleId.lowercased()
         let n = name.lowercased()
-        return browsers.first { b in
-            b.bundleIds.contains(bid) || b.names.contains(n)
+        if !bid.isEmpty {
+            return browsers.first { $0.bundleIds.contains(bid) }
         }
+        return browsers.first { $0.names.contains(n) }
     }
 
     static func isFirefox(name: String, bundleId: String) -> Bool {
-        firefoxBundles.contains(bundleId.lowercased())
-            || firefoxNames.contains(name.lowercased())
+        bundleId.isEmpty
+            ? firefoxNames.contains(name.lowercased())
+            : firefoxBundles.contains(bundleId.lowercased())
     }
 
     private static func script(for target: String) -> String {

@@ -36,3 +36,20 @@ jobs:
       - run: swift test
         env:
           ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-tests
+      - name: Render and exercise the capture panel
+        env:
+          ZONE_CAPTURE_ROOT: ${{ runner.temp }}/zonecapture-ui-smoke
+          ZONE_CAPTURE_SCREENSHOT: ${{ runner.temp }}/capture-panel.png
+        run: |
+          binary_path="$(swift build --show-bin-path)"
+          mkdir -p "$RUNNER_TEMP/zonecapture-ui-harness"
+          cp Tests/UI/CapturePanelSmoke.swift "$RUNNER_TEMP/zonecapture-ui-harness/main.swift"
+          swiftc -I "$binary_path/Modules" "$binary_path/ZoneCaptureCore.build/"*.o \
+            Sources/ZoneCapture/CapturePanel.swift "$RUNNER_TEMP/zonecapture-ui-harness/main.swift" \
+            -lsqlite3 -o "$RUNNER_TEMP/zonecapture-ui-harness/CapturePanelSmoke"
+          "$RUNNER_TEMP/zonecapture-ui-harness/CapturePanelSmoke"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: capture-panel
+          path: ${{ runner.temp }}/capture-panel.png
+          if-no-files-found: error

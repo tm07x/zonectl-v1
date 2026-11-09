@@ -111,6 +111,7 @@ public final class Store {
         // Forward-compatible column for the inference stage (see VISION.md):
         // the topic a capture belongs to. Discovered later, never lost.
         // Migrated onto existing databases as well.
+        addColumnIfMissing("capture_path", type: "TEXT")
         addColumnIfMissing("topic", type: "TEXT")
     }
 
@@ -192,30 +193,23 @@ public final class Store {
 
     /// Returns the most recent N captures, newest first.
     public func recent(limit: Int = 25) -> [(id: Int64, url: String, title: String?, comment: String?, created: Date)] {
-        let sql = "SELECT id, url, title, comment, created_at FROM links ORDER BY created_at DESC, id DESC LIMIT ?;"
-        var stmt: OpaquePointer?
-        var rows: [(Int64, String, String?, String?, Date)] = []
-        lock.lock()
-        defer { lock.unlock() }
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            report(.queryFailed(String(cString: sqlite3_errmsg(db))))
-            return []
-        }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_int64(stmt, 1, Int64(limit))
-        while sqlite3_step(stmt) == SQLITE_ROW {
-            let id = sqlite3_column_int64(stmt, 0)
-            let url = String(cString: sqlite3_column_text(stmt, 1))
-            let title = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
-            let comment = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
-            let ts = sqlite3_column_double(stmt, 4)
-            rows.append((id, url, title, comment, Date(timeIntervalSince1970: ts)))
-        }
-        return rows
+        recentAll(limit: limit).map { ($0.id, $0.url, $0.title, $0.comment, $0.created) }
     }
 
     /// Returns the most recent N captures with all columns, newest first.
     public func recentAll(limit: Int = 25) -> [CaptureRow] {
+        do {
+            return try readRecent(limit: limit)
+        } catch let error as StoreError {
+            report(error)
+            return []
+        } catch {
+            report(.queryFailed(error.localizedDescription))
+            return []
+        }
+    }
+
+    public func readRecent(limit: Int = 25) throws -> [CaptureRow] {
         let sql = """
         SELECT id, url, title, comment, source_app, kind, capture_path, topic, created_at
         FROM links ORDER BY created_at DESC, id DESC LIMIT ?;
@@ -225,12 +219,12 @@ public final class Store {
         lock.lock()
         defer { lock.unlock() }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            report(.queryFailed(String(cString: sqlite3_errmsg(db))))
-            return []
+            throw StoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
         }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_int64(stmt, 1, Int64(limit))
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
             let id = sqlite3_column_int64(stmt, 0)
             let url = String(cString: sqlite3_column_text(stmt, 1))
             let title = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
@@ -250,6 +244,10 @@ public final class Store {
                 capturePath: capturePath,
                 topic: topic,
                 created: Date(timeIntervalSince1970: ts)))
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else {
+            throw StoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
         }
         return rows
     }
@@ -260,4 +258,8 @@ public final class Store {
 
     public var databasePath: String { dbPath }
     public var capturesDirectory: String { capturesDir }
+
+    deinit {
+        sqlite3_close(db)
+    }
 }

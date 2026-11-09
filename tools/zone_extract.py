@@ -14,17 +14,42 @@ import urllib.request
 from readability import Document
 from markdownify import markdownify as md_to_markdown
 
-# Responses larger than this are truncated rather than buffered whole: an
-# unbounded read() lets one huge page balloon memory and produce a giant
-# capture file.
 MAX_BYTES = 10 * 1024 * 1024
 
 
+def _validate_url(url: str) -> None:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        raise ValueError("Invalid HTTP or HTTPS URL") from None
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Only HTTP and HTTPS URLs are supported")
+    if not parsed.hostname:
+        raise ValueError("URL must include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URLs with credentials are not supported")
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            _validate_url(newurl)
+        except ValueError:
+            fp.close()
+            raise
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def fetch(url: str, timeout: int = 20) -> str:
+    _validate_url(url)
     req = urllib.request.Request(
         url, headers={"User-Agent": "ZoneCapture/0.1 (+macOS)"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read(MAX_BYTES + 1)[:MAX_BYTES].decode("utf-8", errors="replace")
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    with opener.open(req, timeout=timeout) as r:
+        body = r.read(MAX_BYTES + 1)
+        if len(body) > MAX_BYTES:
+            raise ValueError(f"Response exceeds maximum size of {MAX_BYTES} bytes")
+        return body.decode("utf-8", errors="replace")
 
 
 def slugify(s: str) -> str:
@@ -32,8 +57,8 @@ def slugify(s: str) -> str:
     return re.sub(r"[\s-]+", "-", s)[:60] or "page"
 
 
-def extract(url: str, out_dir: str) -> dict:
-    html = fetch(url)
+def extract(url: str, out_dir: str, timeout: int = 20) -> dict:
+    html = fetch(url, timeout=timeout)
     doc = Document(html)
     title = doc.short_title() or doc.title() or url
     body_html = doc.summary(html_partial=True)
@@ -70,7 +95,7 @@ def main() -> None:
     args = ap.parse_args()
     Path(args.out).mkdir(parents=True, exist_ok=True)
     try:
-        result = extract(args.url, args.out)
+        result = extract(args.url, args.out, timeout=args.timeout)
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)

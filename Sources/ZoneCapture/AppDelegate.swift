@@ -12,7 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// hotkey ID so the two combos can never swallow each other.
     private let hotkeys = HotkeyManager()
     private let panel = CapturePanel()
-    private var lastReadError: String?
     private var coordinator: CaptureCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -61,15 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSLog("[ZoneCapture] running. DB: \(Store.shared.databasePath)")
 
-        // Surface database errors instead of failing silently. Write failures
-        // are also caught at the call site (the panel shows a retryable
-        // error); this hook logs everything and remembers read errors so
-        // "Recent captures…" can report them.
-        Store.shared.onError = { [weak self] error in
+        Store.shared.onError = { error in
             NSLog("[ZoneCapture] database error: \(error)")
-            if case .queryFailed = error {
-                self?.lastReadError = String(describing: error)
-            }
         }
 
         registerLoginItem()
@@ -184,18 +176,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showRecent() {
-        let rows = Store.shared.recent(limit: 12)
         let alert = NSAlert()
         alert.messageText = "Recent captures"
-        alert.informativeText = rows.isEmpty
-            ? (lastReadError.map { "Database read failed: \($0)" }
-                ?? "Nothing captured yet. Press ⌘⇧L in a browser.")
-            : rows.enumerated().map { i, row in
-                let t = ISO8601DateFormatter().string(from: row.created)
-                let title = row.title.map { " (\($0))" } ?? ""
-                let c = row.comment.map { " — \($0)" } ?? ""
-                return "\(i + 1). \(row.url)\(title)\(c)\n   \(t)"
-            }.joined(separator: "\n")
+        do {
+            let rows = try Store.shared.readRecent(limit: 12)
+            alert.informativeText = rows.isEmpty
+                ? "Nothing captured yet. Press ⌘⇧L in a browser."
+                : rows.enumerated().map { i, row in
+                    let t = ISO8601DateFormatter().string(from: row.created)
+                    let title = row.title.map { " (\($0))" } ?? ""
+                    let c = row.comment.map { " — \($0)" } ?? ""
+                    return "\(i + 1). \(row.url)\(title)\(c)\n   \(t)"
+                }.joined(separator: "\n")
+        } catch {
+            alert.informativeText = "Database read failed: \(error)"
+        }
         alert.addButton(withTitle: "OK")
         alert.runModal()
     }
@@ -225,9 +220,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             let captured = URLFetcher.capture(app: front)
 
-            guard !captured.url.isEmpty else {
+            if let message = captured.failureMessage {
                 DispatchQueue.main.async {
-                    self.panel.showBanner("⚠ No URL from \(captured.appName)")
+                    let alert = NSAlert()
+                    alert.messageText = "Couldn't capture page"
+                    alert.informativeText = message
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
                 }
                 return
             }

@@ -57,6 +57,55 @@ final class CanonicalAuditRegressionTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.capturesDirectory), ["keep.md"])
     }
 
+    func testExtractionFailureRemovesPartialOwnedArtifacts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zonecapture-partial-\(UUID().uuidString)")
+        let store = Store(rootDirectory: root.path)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = CaptureCoordinator(
+            extractor: PageExtractor(runner: WritingAuditRunner(fail: true)), store: store)
+
+        XCTAssertThrowsError(try coordinator.capturePage(url: "https://example.com", sourceApp: nil, comment: nil))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.capturesDirectory), [])
+        XCTAssertTrue(store.recentAll().isEmpty)
+    }
+
+    func testSuccessfulCaptureKeepsOwnedArtifactsAndIndex() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zonecapture-owned-success-\(UUID().uuidString)")
+        let store = Store(rootDirectory: root.path)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = CaptureCoordinator(extractor: PageExtractor(runner: WritingAuditRunner()), store: store)
+
+        let id = try coordinator.capturePage(url: "https://example.com", sourceApp: nil, comment: nil)
+
+        let row = try XCTUnwrap(store.recentAll().first)
+        XCTAssertEqual(row.id, id)
+        let markdown = URL(fileURLWithPath: try XCTUnwrap(row.capturePath))
+        XCTAssertNotEqual(markdown.deletingLastPathComponent().path, store.capturesDirectory)
+        XCTAssertEqual(try String(contentsOf: markdown), "new capture")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: markdown.deletingPathExtension().appendingPathExtension("json").path))
+    }
+
+    func testFailedInsertNeverDeletesRunnerReportedUnownedPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zonecapture-unowned-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("zonecapture.db"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = Store(rootDirectory: root.path)
+        let markdown = root.appendingPathComponent("existing.md")
+        let json = root.appendingPathComponent("existing.json")
+        try "keep markdown".write(to: markdown, atomically: true, encoding: .utf8)
+        try "keep json".write(to: json, atomically: true, encoding: .utf8)
+        let result = ExtractionResult(capturePath: markdown.path, jsonPath: json.path, title: "Existing", wordCount: 2)
+        let coordinator = CaptureCoordinator(extractor: PageExtractor(runner: FakeExtractionRunner(stub: result)), store: store)
+
+        XCTAssertThrowsError(try coordinator.capturePage(url: "https://example.com", sourceApp: nil, comment: nil))
+
+        XCTAssertEqual(try String(contentsOf: markdown), "keep markdown")
+        XCTAssertEqual(try String(contentsOf: json), "keep json")
+    }
+
     private func makeFailingReadStore() throws -> Store {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("zonecapture-read-error-\(UUID().uuidString)")
@@ -78,12 +127,19 @@ final class CanonicalAuditRegressionTests: XCTestCase {
 }
 
 private final class WritingAuditRunner: ExtractionRunner, @unchecked Sendable {
+    private let fail: Bool
+
+    init(fail: Bool = false) {
+        self.fail = fail
+    }
+
     func run(url: String, outDir: String, timeout: TimeInterval) throws -> ExtractionResult {
         let root = URL(fileURLWithPath: outDir)
         let markdown = root.appendingPathComponent("new.md")
         let json = root.appendingPathComponent("new.json")
         try "new capture".write(to: markdown, atomically: true, encoding: .utf8)
         try "{}".write(to: json, atomically: true, encoding: .utf8)
+        if fail { throw ExtractionError.executionFailed("partial extraction") }
         return ExtractionResult(capturePath: markdown.path, jsonPath: json.path, title: "New", wordCount: 2)
     }
 }

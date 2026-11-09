@@ -1,11 +1,34 @@
 # ZoneCapture Tests — Context for Review Agent
 
+## Current validation and isolation
+
+Run `swift build && swift test` on macOS and
+`python -m pytest tools/tests` in a virtualenv containing
+`tools/requirements.txt` and pytest. GitHub Actions provides the macOS runner;
+don't run `make-app.sh` as a test because it signs, installs, or launches the app.
+
+Every database fixture uses a unique temporary directory. The singleton test
+sets `ZONE_CAPTURE_ROOT` before its first access and verifies the resolved path;
+CI also sets a disposable root. Never initialize the production singleton as a
+"read-only" check: opening it creates directories, enables WAL, and migrates schema.
+No test should query, delete, or migrate an everyday Application Support database.
+
+Audit regressions cover stale-session rejection and URL/title binding, exact
+browser-variant targeting, synchronous current-read errors and recovery, terminal
+SQLite errors, legacy schema migration, handler-installation failure, owned-file
+cleanup, joined subprocess drains, HTTP size/timeout/URL validation, and fresh
+CLI path discovery. All network tests use mocked transport or loopback fixtures.
+
+The historical notes below describe earlier test runs, not current validation
+counts. Live Automation/Accessibility permissions, global hotkey delivery,
+login items, and signed packaging remain separate manual checks.
+
 ## What was tested
 
 ### Store (15 tests — `StoreTests.swift`)
 SQLite wrapper tested via a temp-directory initializer so each test gets an
-isolated, throwaway database. No test touches `Store.shared`'s production DB
-(except a read-only sanity check on the singleton).
+isolated, throwaway database. No test touches `Store.shared`'s production DB;
+the singleton sanity check uses a temporary root too.
 
 - **Schema creation**: DB file exists on disk after init; `links` table is
   queryable (empty `recent()` returns `[]`, not a crash).
