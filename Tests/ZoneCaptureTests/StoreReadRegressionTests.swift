@@ -61,6 +61,36 @@ final class StoreReadRegressionTests: XCTestCase {
         }
     }
 
+    func testUnopenableDatabaseFailsCleanlyWithoutCrashing() throws {
+        let root = temporaryRoot()
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("zonecapture.db"), withIntermediateDirectories: true)
+        let store = Store(rootDirectory: root.path)
+        XCTAssertEqual(store.insertLink(url: "https://example.com", title: nil, comment: nil, sourceApp: nil), -1)
+        XCTAssertThrowsError(try store.readRecent()) { error in
+            guard case StoreError.queryFailed(let message) = error else {
+                return XCTFail("Expected queryFailed, got \(error)")
+            }
+            XCTAssertTrue(message.contains("not open"))
+        }
+    }
+
+    func testReadRecentHandlesNullUrlAndKindWithoutCrashing() throws {
+        let root = temporaryRoot()
+        let store = Store(rootDirectory: root.path)
+        try execute(store.databasePath, """
+            DROP TABLE links;
+            CREATE VIEW links AS SELECT 1 AS id, NULL AS url,
+                NULL AS title, 'note' AS comment, 'Terminal' AS source_app,
+                NULL AS kind, NULL AS capture_path, NULL AS topic,
+                1700000000.0 AS created_at;
+            """)
+        let rows = try store.readRecent()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].url, "")
+        XCTAssertEqual(rows[0].kind, "url")
+    }
+
     private func temporaryRoot() -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("zonecapture-read-regression-\(UUID().uuidString)")

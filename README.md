@@ -20,7 +20,6 @@ zone-mode AI chat + routing DSL) are noted under **Roadmap** below.
 ## Build & install
 
 ```bash
-cd VM-APPS/zonecapture
 ./make-app.sh          # builds release, installs to /Applications, launches
 # or
 ./make-app.sh build    # build only, launches from ./build/ZoneCapture.app
@@ -72,8 +71,9 @@ Fixed storage, survives app reinstalls. The `links` table:
 
 For disposable development or CI data, set `ZONE_CAPTURE_ROOT` before starting
 the app or initializing `Store.shared`; it overrides the entire storage root.
-The CLI accepts `ZONE_CAPTURE_DB` for the database file. `zonectl db` prints
-its configured path even before the database exists, without creating it.
+The CLI accepts `ZONE_CAPTURE_DB` for the database file and falls back to
+`ZONE_CAPTURE_ROOT/zonecapture.db` when set. `zonectl db` prints its configured
+path even before the database exists, without creating it.
 Page captures use an operation-owned subdirectory of `captures/`; a known
 extraction or insert failure removes only that operation's directory. This
 doesn't provide crash recovery for a process killed before its insert.
@@ -87,6 +87,7 @@ CREATE TABLE links (
     source_app   TEXT,
     kind         TEXT NOT NULL DEFAULT 'url',  -- 'url' | 'note' | 'capture'
     capture_path TEXT,                          -- path to parsed markdown (feature 2)
+    topic        TEXT,                          -- reserved for inference stage (VISION.md)
     created_at   REAL NOT NULL
 );
 ```

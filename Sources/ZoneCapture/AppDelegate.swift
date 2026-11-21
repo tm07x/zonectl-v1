@@ -8,11 +8,14 @@ import ZoneCaptureCore
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
+    private var pageCaptureMenuItem: NSMenuItem?
     /// One manager for every global hotkey; it dispatches Carbon events by
     /// hotkey ID so the two combos can never swallow each other.
     private let hotkeys = HotkeyManager()
     private let panel = CapturePanel()
     private var coordinator: CaptureCoordinator?
+    private let captureLock = NSLock()
+    private var isCapturingPage = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar item — a small bookmark glyph.
@@ -28,9 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                      action: #selector(showPanel),
                      keyEquivalent: "l")
             .keyEquivalentModifierMask = [.command, .shift]
-        menu.addItem(withTitle: "Capture page content",
-                     action: #selector(capturePageContent),
-                     keyEquivalent: "")
+        let pageItem = menu.addItem(withTitle: "Capture page content",
+                                    action: #selector(capturePageContent),
+                                    keyEquivalent: "l")
+        pageItem.keyEquivalentModifierMask = [.command, .shift, .option]
+        pageCaptureMenuItem = pageItem
         menu.addItem(.separator())
         menu.addItem(withTitle: "Recent captures…",
                      action: #selector(showRecent),
@@ -124,7 +129,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: { [weak self] in self?.capturePageContent() },
             onFailure: { [weak self] status in
                 NSLog("[ZoneCapture] page-capture hotkey registration failed (status \(status))")
-                self?.panel.showBanner("⚠ ⌘⇧⌥L hotkey not registered")
+                self?.pageCaptureMenuItem?.title =
+                    "⚠︎ Hotkey not registered (⌘⇧⌥L in use?)"
+                self?.panel.showBanner("⚠ ⌘⇧⌥L hotkey not registered", duration: 4.0)
             })
     }
 
@@ -192,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Database read failed: \(error)"
         }
         alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }
 
@@ -206,6 +214,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Feature 2: page-content capture
 
+    private func beginPageCapture() -> Bool {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        guard !isCapturingPage else { return false }
+        isCapturingPage = true
+        return true
+    }
+
+    private func endPageCapture() {
+        captureLock.lock()
+        isCapturingPage = false
+        captureLock.unlock()
+    }
+
     @objc private func capturePageContent() {
         guard coordinator != nil else {
             panel.showBanner("✗ Page capture not configured")
@@ -215,18 +237,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.showBanner("⚠ No frontmost app")
             return
         }
+        guard beginPageCapture() else {
+            panel.showBanner("⏳ Page capture already in progress", duration: 2.0)
+            return
+        }
+
+        panel.showBanner("⏳ Capturing page…", duration: 25.0)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+            defer { self.endPageCapture() }
+
             let captured = URLFetcher.capture(app: front)
 
             if let message = captured.failureMessage {
                 DispatchQueue.main.async {
-                    let alert = NSAlert()
-                    alert.messageText = "Couldn't capture page"
-                    alert.informativeText = message
-                    alert.addButton(withTitle: "OK")
-                    alert.runModal()
+                    self.panel.showBanner("⚠ " + message, duration: 4.5)
                 }
                 return
             }
@@ -246,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let detail = String(describing: error)
                 NSLog("[ZoneCapture] page capture failed: \(error)")
                 DispatchQueue.main.async {
-                    self.panel.showBanner("✗ " + String(detail.prefix(60)))
+                    self.panel.showBanner("✗ " + String(detail.prefix(120)), duration: 4.5)
                 }
             }
         }

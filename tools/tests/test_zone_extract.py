@@ -242,3 +242,71 @@ def test_fetch_follows_safe_redirects(local_page_server, relative):
 
     assert ze.fetch(f"{base_url}/redirect", timeout=2) == _fixture_html()
     assert state["requests"] == ["/redirect", "/target"]
+
+
+def test_fetch_rejects_unsupported_content_type(monkeypatch):
+    class _BinaryResponse(_FakeResponse):
+        headers = {"Content-Type": "application/pdf"}
+
+    response = _BinaryResponse(b"%PDF-1.7 binary")
+    _stub_response(monkeypatch, response)
+
+    with pytest.raises(ValueError, match="Unsupported content type: application/pdf"):
+        ze.fetch("https://example.com/doc.pdf")
+    assert response.closed
+
+
+def test_fetch_decodes_http_charset(monkeypatch):
+    from email.message import Message
+
+    class _CharsetResponse(_FakeResponse):
+        def __init__(self, body, ct):
+            super().__init__(body)
+            self.headers = Message()
+            self.headers["Content-Type"] = ct
+
+    text = "Caf\u00e9 na\u00efve"
+    response = _CharsetResponse(text.encode("iso-8859-1"), "text/html; charset=iso-8859-1")
+    _stub_response(monkeypatch, response)
+
+    assert ze.fetch("https://example.com/latin1") == text
+
+
+def test_redirect_handler_rejects_https_to_http_downgrade():
+    handler = ze._SafeRedirectHandler()
+    req = ze.urllib.request.Request("https://example.com/start")
+    fp = _FakeResponse(b"")
+
+    with pytest.raises(ValueError, match="HTTPS to HTTP"):
+        handler.redirect_request(req, fp, 302, "Found", {}, "http://example.com/downgraded")
+    assert fp.closed
+
+
+def test_extract_rejects_empty_readable_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(ze, "fetch", lambda url, timeout=20: "<html><head><title>Empty</title></head><body><script>1</script></body></html>")
+    with pytest.raises(ValueError, match="No readable content"):
+        ze.extract("https://example.com/spa", str(tmp_path))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_extract_resolves_relative_links_and_records_final_url(tmp_path, monkeypatch):
+    html = (
+        "<html><head><title>Redirected</title></head><body><article>"
+        "<h1>Redirected Article</h1>"
+        "<p>Read the <a href='/docs/next'>next section</a> and ignore "
+        "<a href='javascript:alert(1)'>bad script</a>. Enough prose here for readability to keep this paragraph.</p>"
+        "</article></body></html>"
+    )
+    monkeypatch.setattr(
+        ze, "fetch",
+        lambda url, timeout=20: ze._FetchedHTML(html, final_url="https://docs.example.org/guide/intro"))
+
+    result = ze.extract("https://short.example/r", str(tmp_path))
+    md = Path(result["capture_path"]).read_text(encoding="utf-8")
+    js = json.loads(Path(result["json_path"]).read_text(encoding="utf-8"))
+
+    assert "https://docs.example.org/docs/next" in md
+    assert "javascript:" not in md
+    assert 'final_url: "https://docs.example.org/guide/intro"' in md
+    assert js["final_url"] == "https://docs.example.org/guide/intro"
+    assert js["site"] == "docs.example.org"

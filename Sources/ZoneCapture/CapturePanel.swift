@@ -24,6 +24,9 @@ final class CapturePanel {
     private var commentField: NSTextField!
     private var statusLabel: NSTextField!
     private var session = CaptureSession()
+    /// App that was frontmost before the panel activated, so dismissing the
+    /// panel returns keyboard focus cleanly without a mouse click.
+    private var previousApp: NSRunningApplication?
 
     // One reusable confirmation/error banner (previously a new NSWindow was
     // allocated on every save).
@@ -42,17 +45,31 @@ final class CapturePanel {
     func show(front: URLFetcher.FrontApp? = URLFetcher.detectFrontmost()) {
         // Identify the frontmost app synchronously, *before* this panel
         // steals focus. The URL fetch itself runs in the background.
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        if let front, front.pid != myPID {
+            previousApp = NSWorkspace.shared.runningApplications.first { $0.processIdentifier == front.pid }
+        } else {
+            previousApp = nil
+        }
+
         let request = session.begin(sourceApp: front?.name ?? "")
+        let isBrowser = front.map {
+            URLFetcher.isSupportedBrowser(name: $0.name, bundleId: $0.bundleId)
+        } ?? false
 
         urlField.stringValue = ""
         commentField.stringValue = ""
-        statusLabel.stringValue = front.map { "From \($0.name) — fetching URL…" }
-            ?? "Type a URL or note…"
+        statusLabel.stringValue = front.map {
+            isBrowser ? "From \($0.name) — fetching URL…" : "From \($0.name) — paste a URL or type a note…"
+        } ?? "Type a URL or note…"
 
         positionNearMouseOrCenter()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        panel.makeFirstResponder(urlField)
+        // When a supported browser is frontmost, focus the note field right
+        // away so typing immediately doesn't clobber the URL field while the
+        // browser fetch is in flight.
+        panel.makeFirstResponder(isBrowser ? commentField : urlField)
 
         guard let front else { return }
         DispatchQueue.global(qos: .userInitiated).async {
@@ -71,9 +88,12 @@ final class CapturePanel {
         statusLabel.stringValue = captured.failureMessage
             ?? "From \(captured.appName) · press ↵ to save"
 
+        let editingURL = urlField.currentEditor().map { panel.firstResponder === $0 } ?? false
         if captured.url.isEmpty {
-            panel.makeFirstResponder(urlField)
-        } else if commentField.stringValue.isEmpty {
+            if urlField.stringValue.isEmpty && commentField.stringValue.isEmpty {
+                panel.makeFirstResponder(urlField)
+            }
+        } else if commentField.stringValue.isEmpty && !editingURL {
             panel.makeFirstResponder(commentField)
         }
     }
@@ -109,11 +129,13 @@ final class CapturePanel {
 
         let commentLabel = makeLabel("Note")
         commentField = makeTextField(placeholder: "What's worth remembering here?")
-        commentField.action = #selector(save(_:))
 
         let statusLabel = makeLabel("")
+        statusLabel.alignment = .left
         statusLabel.font = .systemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         self.statusLabel = statusLabel
 
         let cancelButton = NSButton(title: "Cancel", target: self, action: #selector(cancel))
@@ -121,7 +143,7 @@ final class CapturePanel {
         cancelButton.isBordered = true
         cancelButton.bezelStyle = .roundRect
 
-        let saveButton = NSButton(title: "Save", target: self, action: #selector(save))
+        let saveButton = NSButton(title: "Save", target: self, action: #selector(save(_:)))
         saveButton.keyEquivalent = "\r"  // Return
         saveButton.bezelStyle = .rounded
         saveButton.controlSize = .regular
@@ -135,7 +157,7 @@ final class CapturePanel {
 
         grid.addRow(with: [urlLabel, urlField])
         grid.addRow(with: [commentLabel, commentField])
-        grid.addRow(with: [statusLabel, makeSpacer()])
+        grid.addRow(with: [makeSpacer(), statusLabel])
 
         let buttonRow = NSStackView(views: [cancelButton, saveButton])
         buttonRow.orientation = .horizontal
@@ -177,7 +199,7 @@ final class CapturePanel {
         field.placeholderString = placeholder
         field.font = .systemFont(ofSize: 13)
         field.target = self
-        field.action = #selector(save)
+        field.action = #selector(save(_:))
         return field
     }
 
@@ -189,11 +211,14 @@ final class CapturePanel {
 
     // MARK: - Positioning
 
-    private func positionNearMouseOrCenter() {
+    private func screenUnderMouse() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
-        let targetScreen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+        return NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
             ?? NSScreen.main
-        guard let visible = targetScreen?.visibleFrame else { return }
+    }
+
+    private func positionNearMouseOrCenter() {
+        guard let visible = screenUnderMouse()?.visibleFrame else { return }
         // Center horizontally on the screen with the mouse, near the top so
         // it appears where the eye already is.
         var frame = panel.frame
@@ -204,9 +229,18 @@ final class CapturePanel {
 
     // MARK: - Actions
 
-    @objc private func cancel() {
+    private func dismiss() {
         session.end()
         panel.orderOut(nil)
+        if let prev = previousApp,
+           prev.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            prev.activate(options: [])
+        }
+        previousApp = nil
+    }
+
+    @objc private func cancel() {
+        dismiss()
     }
 
     @objc private func save(_ sender: Any?) {
@@ -216,8 +250,7 @@ final class CapturePanel {
         // Nothing to record: an empty URL plus an empty note would only add a
         // junk row (e.g. accidental hotkey + Return). Dismiss silently.
         guard !url.isEmpty || !comment.isEmpty else {
-            session.end()
-            panel.orderOut(nil)
+            dismiss()
             return
         }
 
@@ -243,15 +276,14 @@ final class CapturePanel {
         }
 
         flashBanner("✓ Captured")
-        session.end()
-        panel.orderOut(nil)
+        dismiss()
     }
 
-    func showBanner(_ text: String) {
-        flashBanner(text)
+    func showBanner(_ text: String, duration: TimeInterval? = nil) {
+        flashBanner(text, duration: duration)
     }
 
-    private func flashBanner(_ text: String) {
+    private func flashBanner(_ text: String, duration: TimeInterval? = nil) {
         // Brief visual confirmation (or error notice). Reuses one window.
         if bannerWindow == nil {
             let banner = NSWindow(
@@ -263,14 +295,24 @@ final class CapturePanel {
             banner.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.95)
             banner.level = .floating
             banner.isReleasedWhenClosed = false
-            let label = NSTextField(labelWithString: text)
+            banner.contentView?.wantsLayer = true
+            banner.contentView?.layer?.cornerRadius = 10
+            banner.contentView?.layer?.masksToBounds = true
+
+            let label = NSTextField(wrappingLabelWithString: text)
             label.alignment = .center
+            label.font = .systemFont(ofSize: 13, weight: .medium)
+            label.maximumNumberOfLines = 3
+            label.lineBreakMode = .byWordWrapping
+            label.preferredMaxLayoutWidth = 480
             label.translatesAutoresizingMaskIntoConstraints = false
             banner.contentView?.addSubview(label)
             if let cv = banner.contentView {
                 NSLayoutConstraint.activate([
-                    label.centerXAnchor.constraint(equalTo: cv.centerXAnchor),
-                    label.centerYAnchor.constraint(equalTo: cv.centerYAnchor),
+                    label.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 16),
+                    label.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -16),
+                    label.topAnchor.constraint(equalTo: cv.topAnchor, constant: 10),
+                    label.bottomAnchor.constraint(equalTo: cv.bottomAnchor, constant: -10),
                 ])
             }
             bannerWindow = banner
@@ -278,18 +320,27 @@ final class CapturePanel {
         }
         guard let banner = bannerWindow, let label = bannerLabel else { return }
         label.stringValue = text
-        if let screen = NSScreen.main {
-            var f = banner.frame
-            f.origin.x = screen.visibleFrame.midX - f.width / 2
-            f.origin.y = screen.visibleFrame.maxY - 120
-            banner.setFrame(f, display: true)
+        let maxTextWidth: CGFloat = 480
+        let fitted = label.sizeThatFits(NSSize(width: maxTextWidth, height: .greatestFiniteMagnitude))
+        let width = min(max(ceil(fitted.width) + 32, 220), 520)
+        let height = max(ceil(fitted.height) + 20, 44)
+        if let screen = screenUnderMouse() {
+            let visible = screen.visibleFrame
+            let frame = NSRect(
+                x: visible.midX - width / 2,
+                y: visible.maxY - height - 80,
+                width: width,
+                height: height)
+            banner.setFrame(frame, display: true)
         }
         banner.orderFront(nil)
         bannerHideWork?.cancel()
+        let isNotice = text.hasPrefix("✗") || text.hasPrefix("⚠")
+        let effectiveDuration = duration ?? (isNotice ? 3.5 : 1.4)
         let work = DispatchWorkItem { [weak banner] in
             banner?.orderOut(nil)
         }
         bannerHideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + effectiveDuration, execute: work)
     }
 }

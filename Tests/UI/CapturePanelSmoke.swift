@@ -20,9 +20,11 @@ DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                   let content = window.contentView,
                   let grid = content.subviews.compactMap({ $0 as? NSGridView }).first,
                   let url = grid.cell(atColumnIndex: 1, rowIndex: 0).contentView as? NSTextField,
-                  let note = grid.cell(atColumnIndex: 1, rowIndex: 1).contentView as? NSTextField else {
-                fatalError("Capture panel did not render its editable fields")
+                  let note = grid.cell(atColumnIndex: 1, rowIndex: 1).contentView as? NSTextField,
+                  let status = grid.cell(atColumnIndex: 1, rowIndex: 2).contentView as? NSTextField else {
+                fatalError("Capture panel did not render its editable fields and status label")
             }
+            precondition(status.alignment == .left)
             url.stringValue = "https://example.com/research"
             note.stringValue = "Disposable CI capture"
             window.displayIfNeeded()
