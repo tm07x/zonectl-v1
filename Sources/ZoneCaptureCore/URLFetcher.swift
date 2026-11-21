@@ -17,6 +17,9 @@ public enum URLFetcher {
         /// ZoneCapture permission to control that browser under
         /// System Settings → Privacy & Security → Automation.
         case automationDenied
+        /// Accessibility permission has not been granted, so Firefox's
+        /// address bar cannot be read.
+        case accessibilityDenied
         /// The script failed for any other reason: browser not running,
         /// no open window/tab, scripting error, etc.
         case browserNotRunningOrNoTabs
@@ -40,6 +43,9 @@ public enum URLFetcher {
             case .automationDenied:
                 return "Permission needed: allow ZoneCapture to control \(appName) " +
                     "under System Settings → Privacy & Security → Automation."
+            case .accessibilityDenied:
+                return "Permission needed: allow ZoneCapture under " +
+                    "System Settings → Privacy & Security → Accessibility to read \(appName) tabs."
             case .browserNotRunningOrNoTabs:
                 return "Couldn't read a tab from \(appName) — paste the URL."
             case nil:
@@ -57,6 +63,10 @@ public enum URLFetcher {
         public let pid: pid_t
     }
 
+    /// Serializes `NSAppleScript` execution: Apple's OSA runtime is not
+    /// thread-safe when invoked concurrently from global queues.
+    private static let scriptQueue = DispatchQueue(label: "com.grokink.zonecapture.applescript")
+
     // MARK: - Frontmost detection (synchronous, cheap)
 
     public static func detectFrontmost() -> FrontApp? {
@@ -65,6 +75,12 @@ public enum URLFetcher {
             name: front.localizedName ?? "Unknown",
             bundleId: front.bundleIdentifier ?? "",
             pid: front.processIdentifier)
+    }
+
+    /// Returns true if the given app is a browser ZoneCapture knows how to
+    /// read a URL from (via AppleScript or Firefox Accessibility).
+    public static func isSupportedBrowser(name: String, bundleId: String) -> Bool {
+        browser(name: name, bundleId: bundleId) != nil || isFirefox(name: name, bundleId: bundleId)
     }
 
     // MARK: - Fetching (may block ~100–300 ms; safe off the main thread)
@@ -77,11 +93,14 @@ public enum URLFetcher {
         if isFirefox(name: app.name, bundleId: app.bundleId) {
             // Firefox has no tab-URL AppleScript dictionary. Best effort via
             // the Accessibility API (address bar of the focused window);
-            // on failure the panel falls back to manual paste.
+            // surface a clear permission hint when Accessibility isn't granted.
+            guard AXIsProcessTrusted() else {
+                return Result(url: "", title: nil, appName: app.name, error: .accessibilityDenied)
+            }
             if let fx = firefoxTabInfo(pid: app.pid) {
                 return Result(url: fx.url, title: fx.title, appName: app.name)
             }
-            return Result(url: "", title: nil, appName: app.name)
+            return Result(url: "", title: nil, appName: app.name, error: .browserNotRunningOrNoTabs)
         }
         // Not a browser we can read; the panel can still record a note.
         return Result(url: "", title: nil, appName: app.name)
@@ -179,23 +198,25 @@ public enum URLFetcher {
     // MARK: - Script execution + error mapping
 
     private static func runScript(_ source: String, appName: String) -> Result {
-        guard let appleScript = NSAppleScript(source: source) else {
-            return Result(url: "", title: nil, appName: appName,
-                          error: .browserNotRunningOrNoTabs)
+        scriptQueue.sync {
+            guard let appleScript = NSAppleScript(source: source) else {
+                return Result(url: "", title: nil, appName: appName,
+                              error: .browserNotRunningOrNoTabs)
+            }
+            var errorInfo: NSDictionary?
+            let output = appleScript.executeAndReturnError(&errorInfo)
+            if let err = errorInfo {
+                let number = (err[NSAppleScript.errorNumber] as? Int) ?? 0
+                NSLog("[ZoneCapture] AppleScript error from \(appName) (\(number)): \(err)")
+                // -1743 == errAEEventNotPermitted: Automation permission denied.
+                let kind: FetchError = (number == -1743)
+                    ? .automationDenied
+                    : .browserNotRunningOrNoTabs
+                return Result(url: "", title: nil, appName: appName, error: kind)
+            }
+            let parsed = parse(output.stringValue ?? "")
+            return Result(url: parsed.url, title: parsed.title, appName: appName)
         }
-        var errorInfo: NSDictionary?
-        let output = appleScript.executeAndReturnError(&errorInfo)
-        if let err = errorInfo {
-            let number = (err[NSAppleScript.errorNumber] as? Int) ?? 0
-            NSLog("[ZoneCapture] AppleScript error from \(appName) (\(number)): \(err)")
-            // -1743 == errAEEventNotPermitted: Automation permission denied.
-            let kind: FetchError = (number == -1743)
-                ? .automationDenied
-                : .browserNotRunningOrNoTabs
-            return Result(url: "", title: nil, appName: appName, error: kind)
-        }
-        let parsed = parse(output.stringValue ?? "")
-        return Result(url: parsed.url, title: parsed.title, appName: appName)
     }
 
     /// Parses the raw AppleScript output (URL on line 1, optional title on
@@ -210,10 +231,48 @@ public enum URLFetcher {
 
     // MARK: - Firefox via Accessibility (best effort)
 
-    /// Reads the address bar (AXIdentifier "urlbar") and window title from
-    /// Firefox's accessibility tree. Returns nil whenever the structure is
-    /// not found — the panel then falls back to manual paste. Requires the
-    /// user to grant Accessibility permission once.
+    /// Normalizes a value read from Firefox's address bar into an HTTP(S) URL.
+    /// Modern Firefox strips `https://` from the displayed field and may show
+    /// bare hosts (`example.com/path`) or `localhost:3000`. Non-URL values
+    /// (search queries with spaces, `about:` pages, etc.) return nil.
+    static func normalizeFirefoxURL(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else {
+            return nil
+        }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            guard let comps = URLComponents(string: trimmed),
+                  let host = comps.host, !host.isEmpty else {
+                return nil
+            }
+            return trimmed
+        }
+        let slash = trimmed.firstIndex(of: "/") ?? trimmed.endIndex
+        if let colon = trimmed.firstIndex(of: ":"), colon < slash {
+            let beforeColon = trimmed[..<colon]
+            let afterColon = trimmed[trimmed.index(after: colon)..<slash]
+            let isPort = !afterColon.isEmpty && afterColon.allSatisfy(\.isNumber)
+            if !isPort && !beforeColon.contains(".") {
+                return nil
+            }
+        }
+        if lower == "localhost" || lower.hasPrefix("localhost:") || lower.hasPrefix("localhost/") {
+            return "http://" + trimmed
+        }
+        guard trimmed.contains(".") else { return nil }
+        let candidate = "https://" + trimmed
+        guard let comps = URLComponents(string: candidate),
+              let host = comps.host, !host.isEmpty else {
+            return nil
+        }
+        return candidate
+    }
+
+    /// Reads the address bar (AXIdentifier "urlbar-input" or "urlbar") and
+    /// window title from Firefox's accessibility tree. Returns nil whenever
+    /// the structure is not found — the panel then falls back to manual paste.
     static func firefoxTabInfo(pid: pid_t) -> (url: String, title: String?)? {
         let appElement = AXUIElementCreateApplication(pid)
         guard let windowRef = axAttribute(appElement, kAXFocusedWindowAttribute),
@@ -227,10 +286,10 @@ public enum URLFetcher {
             let role = axAttribute(elem, kAXRoleAttribute) as? String
             if role == kAXTextFieldRole || role == "AXComboBox" {
                 let identifier = axAttribute(elem, "AXIdentifier") as? String
-                if identifier == "urlbar",
+                if (identifier == "urlbar-input" || identifier == "urlbar"),
                    let value = axAttribute(elem, kAXValueAttribute) as? String,
-                   !value.isEmpty, value.contains(".") {
-                    found = value
+                   let normalized = normalizeFirefoxURL(value) {
+                    found = normalized
                     return false
                 }
             }
@@ -241,7 +300,7 @@ public enum URLFetcher {
     }
 
     private static func walk(_ elem: AXUIElement, depth: Int, visit: (AXUIElement) -> Bool) {
-        guard depth < 10 else { return }
+        guard depth < 20 else { return }
         guard visit(elem) else { return }
         guard let childrenRef = axAttribute(elem, kAXChildrenAttribute),
               CFGetTypeID(childrenRef) == CFArrayGetTypeID() else { return }

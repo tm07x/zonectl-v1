@@ -207,3 +207,88 @@ def test_read_commands_report_missing_database_without_creating_it(tmp_path, arg
     assert result.stdout == ""
     assert f"database not found at {db}" in result.stderr
     assert not db.exists()
+
+
+def test_db_respects_zone_capture_root_when_db_unset(tmp_path):
+    env = os.environ.copy()
+    env.pop("ZONE_CAPTURE_DB", None)
+    env["ZONE_CAPTURE_ROOT"] = str(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "db"], capture_output=True, text=True, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == f"{tmp_path / 'zonecapture.db'}\n"
+
+
+def test_open_refuses_note_without_url_or_capture_path():
+    db = _make_db()
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO links (url, title, comment, source_app, kind, created_at) VALUES (?,?,?,?,?,?);",
+        ("(no url — note from Terminal)", None, "remember this", "Terminal", "note", 1_700_000_002.0),
+    )
+    con.commit()
+    con.close()
+
+    env = os.environ.copy()
+    env["ZONE_CAPTURE_DB"] = db
+    env["ZONECTL_OPEN"] = "echo"
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "open", "3"], capture_output=True, text=True, env=env)
+
+    assert result.returncode != 0
+    assert "note with no URL or file" in result.stderr
+
+
+def test_open_handles_empty_zonectl_open_env_without_index_error():
+    db = _make_db()
+    env = os.environ.copy()
+    env["ZONE_CAPTURE_DB"] = db
+    env["ZONECTL_OPEN"] = ""
+    env["PATH"] = ""  # ensures default 'open' isn't found, testing FileNotFoundError path cleanly
+    result = subprocess.run(
+        [sys.executable, ZONECTL, "open", "1"], capture_output=True, text=True, env=env)
+
+    assert result.returncode != 0
+    assert "IndexError" not in result.stderr
+    assert "opener not found: open" in result.stderr
+
+
+def test_search_escapes_like_wildcards_and_matches_topic():
+    db = _make_db()
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO links (url, title, comment, source_app, kind, topic, created_at) VALUES (?,?,?,?,?,?,?);",
+        ("https://metrics.example", "100% CPU", "check_load", "Safari", "url", "linux-kernels", 1_700_000_003.0),
+    )
+    con.commit()
+    con.close()
+
+    # Wildcard '%' must not match everything.
+    pct = _run(["search", "%"], db)
+    assert pct.returncode == 0
+    assert "https://metrics.example" in pct.stdout
+    assert "https://url.com" not in pct.stdout
+
+    # Topic search works.
+    topic = _run(["search", "linux-kernels"], db)
+    assert topic.returncode == 0
+    assert "https://metrics.example" in topic.stdout
+
+
+def test_export_md_formats_notes_and_includes_capture_path():
+    db = _make_db()
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO links (url, title, comment, source_app, kind, topic, created_at) VALUES (?,?,?,?,?,?,?);",
+        ("(no url — note from Terminal)", None, "kernel idea", "Terminal", "note", "systems", 1_700_000_004.0),
+    )
+    con.commit()
+    con.close()
+
+    result = _run(["export", "--format", "md"], db)
+    assert result.returncode == 0, result.stderr
+    assert "[(no url" not in result.stdout
+    assert "- (no url — note from Terminal) `[systems]`" in result.stdout
+    assert "/tmp/captures/page.md" in result.stdout

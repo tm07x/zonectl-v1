@@ -185,7 +185,7 @@ public final class PageExtractor {
 
     /// Extracts `url` into `outDir` using the configured runner.
     @discardableResult
-    public func extract(url: String, outDir: String, timeout: TimeInterval = 60) throws -> ExtractionResult {
+    public func extract(url: String, outDir: String, timeout: TimeInterval = 20) throws -> ExtractionResult {
         try runner.run(url: url, outDir: outDir, timeout: timeout)
     }
 

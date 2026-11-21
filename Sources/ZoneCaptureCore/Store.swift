@@ -83,15 +83,24 @@ public final class Store {
     }
 
     private func open() {
-        if sqlite3_open(dbPath, &db) != SQLITE_OK {
-            let msg = String(cString: sqlite3_errmsg(db))
+        let status = sqlite3_open(dbPath, &db)
+        guard status == SQLITE_OK, let handle = db else {
+            let msg = self.db.map { String(cString: sqlite3_errmsg($0)) } ?? "unable to allocate handle"
+            if let existing = self.db {
+                sqlite3_close(existing)
+            }
+            self.db = nil
             report(.openFailed("\(dbPath): \(msg)"))
+            return
         }
-        // WAL for durability + concurrent reads.
-        sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil)
+        // WAL for durability + concurrent reads; busy_timeout so brief locks
+        // from external readers/writers don't fail immediately with SQLITE_BUSY.
+        sqlite3_exec(handle, "PRAGMA journal_mode=WAL;", nil, nil, nil)
+        sqlite3_exec(handle, "PRAGMA busy_timeout=5000;", nil, nil, nil)
     }
 
     private func createSchema() {
+        guard let db else { return }
         let ddl = """
         CREATE TABLE IF NOT EXISTS links (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +125,7 @@ public final class Store {
     }
 
     private func addColumnIfMissing(_ column: String, type: String) {
+        guard let db else { return }
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, "PRAGMA table_info(links);", -1, &stmt, nil) == SQLITE_OK else {
             return
@@ -137,6 +147,14 @@ public final class Store {
         }
     }
 
+    private func bindOptionalText(_ stmt: OpaquePointer?, index: Int32, value: String?) {
+        if let value {
+            sqlite3_bind_text(stmt, index, value, -1, SQLITE_TRANSIENT)
+        } else {
+            sqlite3_bind_null(stmt, index)
+        }
+    }
+
     @discardableResult
     public func insertLink(
         url: String,
@@ -153,6 +171,10 @@ public final class Store {
         var stmt: OpaquePointer?
         lock.lock()
         defer { lock.unlock() }
+        guard let db else {
+            report(.insertFailed("database is not open"))
+            return -1
+        }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             report(.insertFailed("prepare: \(String(cString: sqlite3_errmsg(db)))"))
             return -1
@@ -160,15 +182,11 @@ public final class Store {
         defer { sqlite3_finalize(stmt) }
 
         sqlite3_bind_text(stmt, 1, url, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 2, title, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 3, comment, -1, SQLITE_TRANSIENT)
-        sqlite3_bind_text(stmt, 4, sourceApp, -1, SQLITE_TRANSIENT)
+        bindOptionalText(stmt, index: 2, value: title)
+        bindOptionalText(stmt, index: 3, value: comment)
+        bindOptionalText(stmt, index: 4, value: sourceApp)
         sqlite3_bind_text(stmt, 5, kind, -1, SQLITE_TRANSIENT)
-        if let cp = capturePath {
-            sqlite3_bind_text(stmt, 6, cp, -1, SQLITE_TRANSIENT)
-        } else {
-            sqlite3_bind_null(stmt, 6)
-        }
+        bindOptionalText(stmt, index: 6, value: capturePath)
         sqlite3_bind_double(stmt, 7, Date().timeIntervalSince1970)
 
         guard sqlite3_step(stmt) == SQLITE_DONE else {
@@ -218,6 +236,9 @@ public final class Store {
         var rows: [CaptureRow] = []
         lock.lock()
         defer { lock.unlock() }
+        guard let db else {
+            throw StoreError.queryFailed("database is not open")
+        }
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             throw StoreError.queryFailed(String(cString: sqlite3_errmsg(db)))
         }
@@ -226,11 +247,11 @@ public final class Store {
         var status = sqlite3_step(stmt)
         while status == SQLITE_ROW {
             let id = sqlite3_column_int64(stmt, 0)
-            let url = String(cString: sqlite3_column_text(stmt, 1))
+            let url = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             let title = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
             let comment = sqlite3_column_text(stmt, 3).map { String(cString: $0) }
             let sourceApp = sqlite3_column_text(stmt, 4).map { String(cString: $0) }
-            let kind = String(cString: sqlite3_column_text(stmt, 5))
+            let kind = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? "url"
             let capturePath = sqlite3_column_text(stmt, 6).map { String(cString: $0) }
             let topic = sqlite3_column_text(stmt, 7).map { String(cString: $0) }
             let ts = sqlite3_column_double(stmt, 8)
